@@ -301,3 +301,5 @@ httpServer.listen(PORT, () => {
   lan.forEach((u) => console.log(`     Rede:   ${u}`));
   console.log('');
 });
+
+const PORT = process.env.PORT || 3001;
