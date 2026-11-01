@@ -302,4 +302,3 @@ httpServer.listen(PORT, () => {
   console.log('');
 });
 
-const PORT = process.env.PORT || 3001;
