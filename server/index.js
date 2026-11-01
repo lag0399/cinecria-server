@@ -21,12 +21,12 @@ const express = require('express');
 const { Server } = require('socket.io');
 
 const PORT = Number(process.env.PORT) || 3001;
-const MAX_VOICE_USERS = Number(process.env.MAX_VOICE_USERS) || 10; // mesh P2P: mantenha baixo
+const MAX_VOICE_USERS = Number(process.env.MAX_VOICE_USERS) || 10;
 const HISTORY_LIMIT = 200;
 const MB = 1024 * 1024;
 const MAX_IMAGE = (Number(process.env.MAX_IMAGE_MB) || 15) * MB;
 const MAX_VIDEO = (Number(process.env.MAX_VIDEO_MB) || 100) * MB;
-const MAX_UPLOAD_TOTAL = (Number(process.env.MAX_UPLOAD_TOTAL_MB) || 2048) * MB; // acima disso, apaga os mais antigos
+const MAX_UPLOAD_TOTAL = (Number(process.env.MAX_UPLOAD_TOTAL_MB) || 2048) * MB;
 const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || path.join(__dirname, 'uploads'));
 const MEDIA_TYPES = {
   'image/png': 'image', 'image/jpeg': 'image', 'image/gif': 'image', 'image/webp': 'image',
@@ -34,20 +34,15 @@ const MEDIA_TYPES = {
 };
 
 const app = express();
-
-// IMPORTANTE PARA O RENDER: Confia no proxy reverso para lidar com conexões seguras (HTTPS/WSS)
 app.set('trust proxy', 1);
 
-// Serve o cliente web (mesma UI do app desktop) — útil para testar em 2 abas do navegador.
 app.use(express.static(path.join(__dirname, '..', 'app', 'renderer')));
 app.get('/health', (_req, res) => res.json({ app: 'cinecria-server', ok: true }));
 
-/* ------------------------------ Mídia do chat ------------------------------ */
-// Os arquivos vivem em disco só enquanto o servidor roda (o histórico do chat também é em memória).
 fs.rmSync(UPLOAD_DIR, { recursive: true, force: true });
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-/** @type {Map<string, any>} */ const uploads = new Map(); // id -> { id, owner, kind, mime, size, name, file, ts }
-/** @type {Map<string, string>} */ const tokens = new Map(); // token de upload -> userId
+const uploads = new Map();
+const tokens = new Map();
 let uploadBytes = 0;
 
 function dropUpload(id) {
@@ -58,7 +53,6 @@ function dropUpload(id) {
   fs.rm(u.file, { force: true }, () => {});
 }
 
-// CORS: o app Electron (file://) e o Android/Navegadores falam com este servidor na nuvem.
 app.use(['/upload', '/media'], (req, res, next) => {
   res.set('Access-Control-Allow-Origin', '*');
   res.set('Access-Control-Allow-Headers', 'Content-Type, X-Cinecria-Token, X-File-Name');
@@ -82,10 +76,9 @@ app.post('/upload', (req, res) => {
 
   const mime = String(req.get('content-type') || '').split(';')[0].trim().toLowerCase();
   const kind = MEDIA_TYPES[mime];
-  if (!kind) return fail(415, 'Formato não suportado. Envie imagens (PNG, JPG, GIF, WebP) ou vídeos (MP4, WebM, MOV).');
+  if (!kind) return fail(415, 'Formato não suportado.');
   const max = kind === 'image' ? MAX_IMAGE : MAX_VIDEO;
-  const tooBig = `Arquivo grande demais (máx. ${Math.round(max / MB)} MB para ${kind === 'image' ? 'imagens' : 'vídeos'}).`;
-  if (Number(req.get('content-length') || 0) > max) return fail(413, tooBig);
+  if (Number(req.get('content-length') || 0) > max) return fail(413, 'Arquivo grande demais.');
 
   user.uploadTimes.push(now);
   const id = crypto.randomBytes(12).toString('hex');
@@ -101,7 +94,7 @@ app.post('/upload', (req, res) => {
       req.unpipe(out);
       out.destroy();
       fs.rm(file, { force: true }, () => {});
-      fail(413, tooBig);
+      fail(413, 'Arquivo grande demais.');
     }
   });
   req.on('aborted', () => { aborted = true; out.destroy(); fs.rm(file, { force: true }, () => {}); });
@@ -114,7 +107,7 @@ app.post('/upload', (req, res) => {
     const meta = { id, owner: user.id, kind, mime, size, name: name.replace(/[\r\n]/g, '').slice(0, 120), file, ts: Date.now() };
     uploads.set(id, meta);
     uploadBytes += size;
-    for (const old of uploads.keys()) { // cota total: remove os mais antigos
+    for (const old of uploads.keys()) {
       if (uploadBytes <= MAX_UPLOAD_TOTAL) break;
       if (old !== id) dropUpload(old);
     }
@@ -133,20 +126,221 @@ app.get('/media/:id', (req, res) => {
     'Content-Security-Policy': "default-src 'none'; sandbox",
     'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(meta.name)}`,
   });
-  res.sendFile(meta.file); // suporta Range → vídeos com seek/streaming
+  res.sendFile(meta.file);
 });
 
 const httpServer = http.createServer(app);
 const io = new Server(httpServer, {
   cors: { origin: '*' },
-  maxHttpBufferSize: 1e6, // avatares são redimensionados no cliente (~10 KB)
+  maxHttpBufferSize: 1e6,
 });
 
-/* ------------------------------ Estado em memória ------------------------------ */
 const uid = () => crypto.randomBytes(6).toString('hex');
 const COLORS = ['#7b61ff', '#f2545b', '#23a55a', '#f0b232', '#3ba7ff', '#eb459e', '#00b8a9', '#ff7a45'];
 
-/** @type {Map<string, any>} */ const servers = new Map();   // serverId -> server
-/** @type {Map<string, string>} */ const invites = new Map(); // código -> serverId
-/** @type {Map<string, any[]>} */ const history = new Map();  // channelId -> mensagens
-/** @type {Map<string, any>} */ const users =
+const servers = new Map();
+const invites = new Map();
+const history = new Map();
+const users = new Map();
+
+function newInvite() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code;
+  do {
+    code = Array.from(crypto.randomBytes(6), (b) => alphabet[b % alphabet.length]).join('');
+  } while (invites.has(code));
+  return code;
+}
+
+function createServer({ name, isPublic = false, ownerId = null, channels }) {
+  const s = {
+    id: uid(),
+    name: String(name).trim().slice(0, 40) || 'Servidor',
+    color: COLORS[servers.size % COLORS.length],
+    invite: newInvite(),
+    isPublic,
+    ownerId,
+    channels: (channels || [
+      { name: 'geral', type: 'text' },
+      { name: 'links', type: 'text' },
+      { name: 'Cine 1', type: 'voice' },
+      { name: 'Cine 2', type: 'voice' },
+      { name: 'Jogatina', type: 'voice' },
+    ]).map((c) => ({ id: uid(), ...c })),
+    members: new Set(),
+  };
+  servers.set(s.id, s);
+  invites.set(s.invite, s.id);
+  return s;
+}
+
+createServer({
+  name: 'Cinecria Lobby',
+  isPublic: true,
+  channels: [
+    { name: 'boas-vindas', type: 'text' },
+    { name: 'geral', type: 'text' },
+    { name: 'indicações', type: 'text' },
+    { name: 'Sala de Cinema', type: 'voice' },
+    { name: 'Sessão da Tarde', type: 'voice' },
+    { name: 'Jogatina', type: 'voice' },
+  ],
+});
+createServer({ name: 'Maratona de Séries', isPublic: true });
+
+const defaultState = () => ({
+  muted: false, deafened: false, camera: false, screen: false,
+  micStreamId: null, camStreamId: null, screenStreamId: null, quality: null,
+});
+
+const publicUser = (u) => ({ id: u.id, name: u.name, avatar: u.avatar, voice: u.voice, state: u.state });
+
+function snapshot(s) {
+  return {
+    id: s.id, name: s.name, color: s.color, invite: s.invite, isPublic: s.isPublic, ownerId: s.ownerId,
+    channels: s.channels,
+    members: [...s.members].map((id) => users.get(id)).filter(Boolean).map(publicUser),
+  };
+}
+
+const broadcastServer = (s) => s && io.to(`srv:${s.id}`).emit('server:update', snapshot(s));
+
+function findChannel(channelId) {
+  for (const s of servers.values()) {
+    const ch = s.channels.find((c) => c.id === channelId);
+    if (ch) return { s, ch };
+  }
+  return {};
+}
+
+const cleanName = (n) => String(n || '').replace(/\s+/g, ' ').trim().slice(0, 32);
+const validAvatar = (a) => typeof a === 'string' && /^data:image\/(png|jpe?g|webp|gif);base64,/.test(a) && a.length < 300_000;
+const ack = (fn) => (typeof fn === 'function' ? fn : () => {});
+
+io.on('connection', (socket) => {
+  let user = null;
+  const sent = [];
+
+  function joinServer(s) {
+    s.members.add(user.id);
+    user.servers.add(s.id);
+    socket.join(`srv:${s.id}`);
+  }
+
+  function leaveVoice() {
+    if (!user || !user.voice) return;
+    const { serverId, channelId } = user.voice;
+    socket.leave(`vc:${channelId}`);
+    socket.to(`vc:${channelId}`).emit('voice:peer-left', { peerId: user.id });
+    const { muted, deafened } = user.state;
+    user.voice = null;
+    user.state = { ...defaultState(), muted, deafened };
+    broadcastServer(servers.get(serverId));
+  }
+
+  socket.on('hello', (payload = {}, cb) => {
+    const reply = ack(cb);
+    const name = cleanName(payload.name);
+    if (!name) return reply({ error: 'Escolha um apelido.' });
+    if (user) return reply({ error: 'Sessão já iniciada.' });
+
+    user = {
+      id: socket.id,
+      name,
+      avatar: validAvatar(payload.avatar) ? payload.avatar : null,
+      servers: new Set(),
+      voice: null,
+      state: defaultState(),
+    };
+    users.set(user.id, user);
+    user.token = crypto.randomBytes(18).toString('hex');
+    tokens.set(user.token, user.id);
+
+    for (const s of servers.values()) if (s.isPublic) joinServer(s);
+    for (const code of Array.isArray(payload.invites) ? payload.invites.slice(0, 50) : []) {
+      const s = servers.get(invites.get(String(code).toUpperCase()));
+      if (s) joinServer(s);
+    }
+    user.servers.forEach((id) => broadcastServer(servers.get(id)));
+    reply({ me: publicUser(user), token: user.token, servers: [...user.servers].map((id) => snapshot(servers.get(id))) });
+  });
+
+  socket.on('profile:update', (payload = {}, cb) => {
+    if (!user) return;
+    const name = cleanName(payload.name);
+    if (name) user.name = name;
+    if (payload.avatar === null || validAvatar(payload.avatar)) user.avatar = payload.avatar;
+    user.servers.forEach((id) => broadcastServer(servers.get(id)));
+    ack(cb)({ me: publicUser(user) });
+  });
+
+  socket.on('server:create', ({ name } = {}, cb) => {
+    if (!user) return;
+    const s = createServer({ name: name || `Servidor de ${user.name}`, ownerId: user.id });
+    joinServer(s);
+    ack(cb)({ server: snapshot(s) });
+  });
+
+  socket.on('server:join', ({ code } = {}, cb) => {
+    if (!user) return;
+    const clean = String(code || '').trim().split('/').pop().toUpperCase();
+    const s = servers.get(invites.get(clean));
+    if (!s) return ack(cb)({ error: 'Convite inválido ou expirado.' });
+    joinServer(s);
+    broadcastServer(s);
+    ack(cb)({ server: snapshot(s) });
+  });
+
+  socket.on('server:leave', ({ serverId } = {}) => {
+    const s = servers.get(serverId);
+    if (!user || !s || s.isPublic) return;
+    if (user.voice?.serverId === s.id) leaveVoice();
+    s.members.delete(user.id);
+    user.servers.delete(s.id);
+    socket.leave(`srv:${s.id}`);
+    broadcastServer(s);
+  });
+
+  socket.on('channel:create', ({ serverId, name, type } = {}, cb) => {
+    const s = servers.get(serverId);
+    if (!user || !s || !s.members.has(user.id)) return ack(cb)({ error: 'Sem acesso.' });
+    if (s.channels.length >= 50) return ack(cb)({ error: 'Limite de canais atingido.' });
+    const t = type === 'voice' ? 'voice' : 'text';
+    let n = String(name || '').trim().slice(0, 32);
+    if (t === 'text') n = n.toLowerCase().replace(/\s+/g, '-');
+    if (!n) return ack(cb)({ error: 'Dê um nome ao canal.' });
+    const ch = { id: uid(), name: n, type: t };
+    s.channels.push(ch);
+    broadcastServer(s);
+    ack(cb)({ channel: ch });
+  });
+
+  socket.on('chat:history', ({ channelId } = {}, cb) => {
+    const { s } = findChannel(channelId);
+    if (!user || !s || !s.members.has(user.id)) return ack(cb)({ messages: [] });
+    ack(cb)({ messages: history.get(channelId) || [] });
+  });
+
+  socket.on('chat:send', ({ channelId, text, attachment } = {}) => {
+    const { s, ch } = findChannel(channelId);
+    if (!user || !s || ch.type !== 'text' || !s.members.has(user.id)) return;
+    const body = String(text || '').trim().slice(0, 2000);
+    let att = null;
+    const up = attachment && uploads.get(String(attachment.id));
+    if (up && up.owner === user.id && !up.used) {
+      up.used = true;
+      const dim = (n) => Math.max(0, Math.min(16384, Math.round(Number(n) || 0)));
+      att = { id: up.id, kind: up.kind, mime: up.mime, size: up.size, name: up.name, w: dim(attachment.w), h: dim(attachment.h) };
+    }
+    if (!body && !att) return;
+    const now = Date.now();
+    while (sent.length && now - sent[0] > 5000) sent.shift();
+    if (sent.length >= 8) return;
+    sent.push(now);
+
+    const msg = { id: uid(), channelId, author: { id: user.id, name: user.name, avatar: user.avatar }, text: body, ts: now };
+    if (att) msg.attachment = att;
+    const list = history.get(channelId) || [];
+    list.push(msg);
+    if (list.length > HISTORY_LIMIT) {
+      for (const old of list.splice(0, list.length - HISTORY_LIMIT)) if (old.attachment) dropUpload(old.attachment.id);
