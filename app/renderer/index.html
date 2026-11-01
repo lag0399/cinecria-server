@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src * ws: wss: http: https:;" />
+  <title>Cinecria</title>
+  <link rel="stylesheet" href="styles.css" />
+  <!-- socket.io client: do node_modules (Electron) com fallback para o servidor (modo navegador) -->
+  <script src="../node_modules/socket.io-client/dist/socket.io.min.js"></script>
+  <script src="js/vendor-fallback.js"></script>
+  <script src="js/config.js"></script>
+  <script src="js/rtc.js"></script>
+</head>
+<body>
+  <!-- ============ Entrada: apelido + foto ============ -->
+  <section id="login" class="login">
+    <div class="login-glow"></div>
+    <div class="login-card">
+      <div class="brand">
+        <div class="brand-logo" id="brandLogo"></div>
+        <div>
+          <h1>Cinecria</h1>
+          <p>Assista junto. Em alta qualidade.</p>
+        </div>
+      </div>
+
+      <div class="avatar-pick" id="loginAvatar">
+        <button class="avatar-big" type="button" title="Enviar foto"><img alt="" /><span class="av-edit">Trocar</span></button>
+        <div class="avatar-side">
+          <span class="label">Foto de perfil</span>
+          <div class="presets"></div>
+          <button class="btn ghost sm av-upload" type="button">Enviar foto…</button>
+          <input type="file" class="av-file" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
+        </div>
+      </div>
+
+      <label class="field">
+        <span class="label">Apelido</span>
+        <input id="nick" maxlength="32" placeholder="Como seus amigos vão te ver" autocomplete="off" spellcheck="false" />
+      </label>
+
+      <details class="adv">
+        <summary>Servidor Cinecria</summary>
+        <input id="srvUrl" placeholder="http://localhost:3001" spellcheck="false" />
+      </details>
+
+      <button class="btn primary big" id="enterBtn" type="button">Entrar</button>
+      <p class="err" id="loginErr"></p>
+    </div>
+  </section>
+
+  <!-- ============ Interface principal ============ -->
+  <div id="app" class="app hidden">
+    <nav id="rail" class="rail"></nav>
+    <aside class="sidebar">
+      <div id="srvHeader"></div>
+      <div id="channels" class="channels"></div>
+      <div id="voicePanel" class="voice-panel hidden"></div>
+      <div id="userPanel" class="user-panel"></div>
+    </aside>
+    <main id="main" class="main"></main>
+    <aside id="members" class="members"></aside>
+  </div>
+
+  <div id="modalRoot"></div>
+  <div id="toasts" class="toasts"></div>
+  <div id="audioSink" hidden></div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
