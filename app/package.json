@@ -1,7 +1,7 @@
 {
   "name": "cinecria",
   "productName": "Cinecria",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Cinecria — assista junto com seus amigos: canais de voz e compartilhamento de tela em alta qualidade.",
   "author": "Cinecria",
   "license": "MIT",
@@ -39,18 +39,8 @@
     ],
     "win": {
       "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "portable",
-          "arch": [
-            "x64"
-          ]
-        }
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
       ],
       "icon": "build/icon.ico"
     },
@@ -65,8 +55,5 @@
     "portable": {
       "artifactName": "Cinecria-Portable-${version}.${ext}"
     }
-  },
-  "allowScripts": {
-    "electron@33.4.11": true
   }
 }

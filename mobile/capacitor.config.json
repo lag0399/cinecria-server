@@ -1,0 +1,22 @@
+{
+  "appId": "com.cinecria.app",
+  "appName": "Cinecria",
+  "webDir": "www",
+  "backgroundColor": "#0c0c14",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true,
+    "backgroundColor": "#0c0c14",
+    "webContentsDebuggingEnabled": true
+  },
+  "plugins": {
+    "StatusBar": {
+      "style": "DARK",
+      "backgroundColor": "#0c0c14",
+      "overlaysWebView": false
+    }
+  }
+}

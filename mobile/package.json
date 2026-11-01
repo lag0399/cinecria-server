@@ -1,0 +1,29 @@
+{
+  "name": "cinecria-mobile",
+  "version": "1.1.0",
+  "description": "Cinecria para Android — mesma UI e mesmo WebRTC do desktop, empacotados com Capacitor.",
+  "private": true,
+  "scripts": {
+    "web": "node scripts/copy-web.js",
+    "setup": "npm run web && npx cap add android && node scripts/patch-android.js",
+    "sync": "npm run web && npx cap sync android && node scripts/patch-android.js",
+    "open": "npx cap open android",
+    "run": "npm run sync && npx cap run android",
+    "apk": "npm run sync && cd android && gradlew assembleDebug",
+    "apk:release": "npm run sync && cd android && gradlew assembleRelease",
+    "icons": "npx @capacitor/assets generate --android --iconBackgroundColor \"#0c0c14\" --splashBackgroundColor \"#0c0c14\""
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/app": "^6.0.1",
+    "@capacitor/core": "^6.1.2",
+    "@capacitor/screen-orientation": "^6.0.2",
+    "@capacitor/status-bar": "^6.0.1",
+    "@capacitor-community/keep-awake": "^5.0.1",
+    "socket.io-client": "^4.8.1"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^6.1.2"
+  }
+}

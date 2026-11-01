@@ -32,7 +32,7 @@ function createWindow() {
     height: 880,
     minWidth: 980,
     minHeight: 620,
-    backgroundColor: '#1a1b1e',
+    backgroundColor: '#0c0c14',
     title: 'Cinecria',
     icon: path.join(__dirname, 'build', 'icon.png'),
     autoHideMenuBar: true,

@@ -7,6 +7,18 @@
   'use strict';
   const CFG = window.CINECRIA_CONFIG;
 
+  /* ============================== plataforma ============================== */
+  const CAP = window.Capacitor;
+  const IS_NATIVE = !!CAP?.isNativePlatform?.();
+  const PLUG = (name) => (IS_NATIVE ? CAP.Plugins?.[name] : null);
+  const IS_TOUCH = matchMedia('(pointer: coarse)').matches;
+  const isMobile = () => matchMedia('(max-width: 820px), (max-height: 520px) and (pointer: coarse)').matches;
+  // Android/iOS não têm getDisplayMedia: no celular dá para assistir, falar e ligar a câmera.
+  const CAN_SHARE = !!navigator.mediaDevices?.getDisplayMedia && !/Android|iPhone|iPad/i.test(navigator.userAgent);
+  document.documentElement.classList.toggle('native', IS_NATIVE);
+  document.documentElement.classList.toggle('touch', IS_TOUCH);
+  document.documentElement.classList.toggle('no-share', !CAN_SHARE);
+
   /* =============================== utilidades =============================== */
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -57,6 +69,14 @@
     x: '<path d="M18 6 6 18M6 6l12 12"/>',
     send: '<path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z"/>',
     signal: '<path d="M4 20v-4M9 20v-8M14 20V8M19 20V4"/>',
+    menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
+    paperclip: '<path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/>',
+    smile: '<circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01"/>',
+    vol: '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/>',
+    volX: '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="m22 9-6 6M16 9l6 6"/>',
+    reset: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/>',
+    film: '<rect x="2" y="3" width="20" height="18" rx="2"/><path d="M7 3v18M17 3v18M2 8h5M2 13h5M2 18h5M17 8h5M17 13h5M17 18h5"/>',
+    external: '<path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
     chat: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
     trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>',
   };
@@ -68,7 +88,7 @@
 
   // id único por instância: um gradiente definido dentro de um elemento oculto não renderiza nos outros
   let logoSeq = 0;
-  const logo = () => { const id = 'cineGrad' + ++logoSeq; return `<svg viewBox="0 0 48 48" class="logo" aria-hidden="true"><defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8f7bff"/><stop offset="1" stop-color="#ff5e7a"/></linearGradient></defs><rect width="48" height="48" rx="14" fill="url(#${id})"/><rect x="10.5" y="13.5" width="27" height="18" rx="3.5" fill="none" stroke="#fff" stroke-width="2.6"/><path d="M21 18.4v8.2l7-4.1z" fill="#fff"/><path d="M17 36.5h14" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/></svg>`; };
+  const logo = () => { const id = 'cineGrad' + ++logoSeq; return `<svg viewBox="0 0 48 48" class="logo" aria-hidden="true"><defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffb23f"/><stop offset=".55" stop-color="#ff5a5f"/><stop offset="1" stop-color="#ff3d7f"/></linearGradient></defs><rect width="48" height="48" rx="13" fill="url(#${id})"/><rect x="10.5" y="13.5" width="27" height="18" rx="3.5" fill="none" stroke="#14070c" stroke-width="2.8"/><path d="M21 18.4v8.2l7-4.1z" fill="#14070c"/><path d="M17 36.5h14" stroke="#14070c" stroke-width="2.8" stroke-linecap="round"/></svg>`; };
 
   /* ================================ avatares =============================== */
   const PRESET_HUES = [[262, 300], [340, 15], [150, 190], [28, 52], [200, 240], [300, 330], [170, 130], [8, 40]];
@@ -165,6 +185,9 @@
     prevScreens: new Set(),
     speaking: new Set(),
     tileEls: new Map(),
+    token: null,                         // autoriza uploads de mídia (só este cliente conhece)
+    volumes: LS.get('volumes', {}),      // { [nome]: { voice, stream, muted } } — volume LOCAL por pessoa
+    staged: [],                          // anexos aguardando envio no chat
   };
 
   const req = (ev, data) => new Promise((res) =>
@@ -258,17 +281,64 @@
     const nick = $('#nick');
     nick.value = profile.name || '';
     $('#srvUrl').value = profile.serverUrl || CFG.defaultServerUrl;
+    if (IS_NATIVE) {
+      $('.adv').open = true; // no celular o IP do PC é obrigatório — campo sempre visível
+      $('#srvEmu').addEventListener('click', () => { $('#srvUrl').value = `http://10.0.2.2:${CFG.defaultPort}`; testServer(); });
+    }
+    $('#srvTest').addEventListener('click', testServer);
     loginPicker = setupAvatarPicker($('#loginAvatar'), nick, profile);
     $('#enterBtn').addEventListener('click', enter);
     nick.addEventListener('keydown', (e) => e.key === 'Enter' && enter());
     setTimeout(() => nick.focus(), 50);
   }
 
+  /** "192.168.0.5" → "http://192.168.0.5:3001"; localhost no Android → avisa (é o próprio celular). */
+  function normalizeUrl(raw) {
+    let v = String(raw || '').trim().replace(/\/+$/, '');
+    if (!v) return '';
+    if (!/^https?:\/\//i.test(v)) v = 'http://' + v;
+    try {
+      const u = new URL(v);
+      if (!u.port && u.protocol === 'http:') u.port = String(CFG.defaultPort);
+      return u.origin;
+    } catch { return v; }
+  }
+
+  async function testServer() {
+    const hint = $('#srvHint');
+    const url = normalizeUrl($('#srvUrl').value);
+    if (!url) { hint.textContent = 'Digite o IP do PC que roda o servidor.'; hint.className = 'srv-hint err'; return false; }
+    $('#srvUrl').value = url;
+    if (IS_NATIVE && /\/\/(localhost|127\.0\.0\.1)\b/.test(url)) {
+      hint.textContent = 'No celular, "localhost" é o próprio celular. Use o IP do PC (ou 10.0.2.2 no emulador).';
+      hint.className = 'srv-hint err';
+      return false;
+    }
+    hint.textContent = 'Testando…'; hint.className = 'srv-hint';
+    try {
+      const ctrl = new AbortController();
+      setTimeout(() => ctrl.abort(), 5000);
+      const r = await fetch(url + '/health', { signal: ctrl.signal });
+      const j = await r.json();
+      if (!j.ok) throw new Error();
+      hint.textContent = '✓ Servidor Cinecria encontrado'; hint.className = 'srv-hint ok';
+      return true;
+    } catch {
+      hint.textContent = 'Sem resposta. Confira o IP, se o servidor está rodando e se o celular está no mesmo Wi-Fi.';
+      hint.className = 'srv-hint err';
+      return false;
+    }
+  }
+
   function enter() {
     const name = $('#nick').value.trim();
     const err = $('#loginErr');
     if (!name) { err.textContent = 'Escolha um apelido para entrar.'; $('#nick').focus(); return; }
-    Object.assign(profile, loginPicker.state(), { name, serverUrl: $('#srvUrl').value.trim() || CFG.defaultServerUrl });
+    const serverUrl = normalizeUrl($('#srvUrl').value) || CFG.defaultServerUrl;
+    if (IS_NATIVE && /\/\/(localhost|127\.0\.0\.1)\b/.test(serverUrl)) { testServer(); return; }
+    if (!serverUrl) { err.textContent = 'Informe o endereço do servidor Cinecria (IP do PC).'; $('.adv').open = true; $('#srvUrl').focus(); return; }
+    $('#srvUrl').value = serverUrl;
+    Object.assign(profile, loginPicker.state(), { name, serverUrl });
     LS.set('profile', profile);
     err.textContent = '';
     $('#enterBtn').disabled = true;
@@ -313,8 +383,9 @@
     socket.on('signal', (m) => S.voice?.handleSignal(m));
   }
 
-  function onInit({ me, servers }) {
+  function onInit({ me, servers, token }) {
     S.me = me;
+    S.token = token;
     S.servers = new Map(servers.map((s) => [s.id, s]));
     S.messages.clear(); S.loaded.clear(); S.unread.clear();
     const last = LS.get('lastServer');
@@ -342,7 +413,7 @@
     }
     S.messages.get(msg.channelId).push(msg);
     const cur = textChannel(activeServer());
-    if (S.view === 'text' && cur?.id === msg.channelId) renderMessages(msg.channelId);
+    if (S.view === 'text' && cur?.id === msg.channelId) appendMessage(msg);
     else if (msg.author.id !== S.me.id) { S.unread.add(msg.channelId); renderRail(); renderSidebar(); }
   }
 
@@ -377,9 +448,10 @@
 
   function vcMember(m) {
     const st = m.state || {};
-    return `<div class="vcm ${S.speaking.has(m.id) ? 'speaking' : ''}" data-user="${m.id}">
+    return `<div class="vcm ${S.speaking.has(m.id) ? 'speaking' : ''}" data-user="${m.id}" data-vol-user="${m.id}">
       ${avatar(m, 'xs')}<span class="nm">${esc(m.name)}</span>
       <span class="vcm-icons">
+        ${volBadge(m)}
         ${st.screen ? '<span class="live-badge">AO VIVO</span>' : ''}
         ${st.camera ? icon('camera', 'dim') : ''}
         ${st.deafened ? icon('headOff', 'red') : st.muted ? icon('micOff', 'red') : ''}
@@ -400,11 +472,11 @@
       const ms = srv.members.filter((m) => m.voice?.channelId === c.id);
       const connected = S.voice?.channelId === c.id;
       const live = ms.some((m) => m.state?.screen);
-      return `<button class="ch voice ${connected ? 'connected' : ''} ${connected && S.view === 'voice' ? 'active' : ''}" data-channel="${c.id}" data-type="voice">
-          ${icon('volume')}<span class="ch-name">${esc(c.name)}</span>${live ? '<span class="live-dot"></span>' : ''}${ms.length ? `<em class="count">${ms.length}</em>` : ''}</button>
+      return `<button class="ch voice ${live ? 'is-live' : ''} ${connected ? 'connected' : ''} ${connected && S.view === 'voice' ? 'active' : ''}" data-channel="${c.id}" data-type="voice">
+          ${icon('volume')}<span class="ch-name">${esc(c.name)}</span>${live ? '<span class="now-showing">EM CARTAZ</span>' : ''}${ms.length ? `<em class="count">${ms.length}</em>` : ''}</button>
         <div class="vc-members">${ms.map(vcMember).join('')}</div>`;
     }).join('');
-    $('#channels').innerHTML = cat('Canais de texto', 'text') + text + cat('Canais de voz', 'voice') + voice;
+    $('#channels').innerHTML = cat('Chat', 'text') + text + cat('Salas de exibição', 'voice') + voice;
   }
 
   function renderVoicePanel() {
@@ -421,7 +493,7 @@
       </div>
       <div class="vp-btns">
         <button class="vp-btn ${S.voice.camStream ? 'on' : ''}" data-action="toggle-camera">${icon('camera')}Vídeo</button>
-        <button class="vp-btn ${S.voice.screen ? 'live' : ''}" data-action="toggle-screen">${icon(S.voice.screen ? 'screenStop' : 'screenShare')}${S.voice.screen ? 'Parar' : 'Tela'}</button>
+        ${CAN_SHARE ? `<button class="vp-btn ${S.voice.screen ? 'live' : ''}" data-action="toggle-screen">${icon(S.voice.screen ? 'screenStop' : 'screenShare')}${S.voice.screen ? 'Parar' : 'Tela'}</button>` : ''}
       </div>`;
   }
 
@@ -447,7 +519,7 @@
       const vc = m.voice && S.servers.get(m.voice.serverId)?.channels.find((c) => c.id === m.voice.channelId);
       const sub = m.state?.screen ? `<small class="live-txt">${icon('screen')}Transmitindo em ${esc(vc?.name || '')}</small>`
         : vc ? `<small>${icon('volume')}${esc(vc.name)}</small>` : '';
-      return `<div class="mem ${m.id === S.me.id ? 'me' : ''}" data-user="${m.id}">
+      return `<div class="mem ${m.id === S.me.id ? 'me' : ''}" data-user="${m.id}" data-vol-user="${m.id}">
         <span class="av-wrap">${avatar(m, 'sm')}<span class="status-dot"></span></span>
         <span class="mem-names"><b style="color:${nameColor(m.name)}">${esc(m.name)}</b>${sub}</span></div>`;
     }).join('');
@@ -480,28 +552,27 @@
     main.dataset.view = 'text:' + ch.id;
     main.innerHTML = `
       <header class="main-head">
+        <button class="icon-btn mobile-only" data-action="drawer" title="Menu">${icon('menu')}</button>
         ${icon('hash', 'muted')}<b>${esc(ch.name)}</b>
         <span class="topic">Chat do servidor · links, indicações e horários da sessão</span>
         <div class="spacer"></div>
-        ${S.voice ? `<button class="head-pill" data-action="open-stage">${icon('volume')}Voltar ao canal de voz</button>` : ''}
+        ${S.voice ? `<button class="head-pill" data-action="open-stage">${icon('volume')}<span class="pill-long">Voltar ao canal de voz</span><span class="pill-short">Voz</span></button>` : ''}
         <button class="icon-btn ${S.showMembers ? 'on' : ''}" data-action="toggle-members" title="Lista de membros">${icon('users')}</button>
       </header>
       <div class="messages" id="msgList"></div>
-      <form class="composer" id="composer">
-        <div class="composer-box">
-          <input id="msgInput" maxlength="2000" placeholder="Conversar em #${esc(ch.name)}" autocomplete="off" spellcheck="true" />
-          <button type="submit" class="icon-btn" title="Enviar">${icon('send')}</button>
-        </div>
-      </form>`;
-    $('#composer').addEventListener('submit', (e) => {
-      e.preventDefault();
-      const input = $('#msgInput');
-      const text = input.value.trim();
-      if (!text) return;
-      S.socket.emit('chat:send', { channelId: ch.id, text });
-      input.value = '';
-    });
-    setTimeout(() => $('#msgInput')?.focus(), 0);
+      <div class="composer" id="composer">
+        <div class="tray hidden" id="tray"></div>
+        <form class="composer-box" id="composerForm">
+          <button type="button" class="icon-btn" data-action="attach" title="Anexar foto ou vídeo">${icon('paperclip')}</button>
+          <input type="file" id="fileInput" accept="${ACCEPT}" multiple hidden />
+          <input id="msgInput" maxlength="2000" placeholder="Conversar em #${esc(ch.name)}" autocomplete="off" spellcheck="true" enterkeyhint="send" />
+          <button type="button" class="icon-btn emoji-btn" data-action="emoji" title="Emojis">${icon('smile')}</button>
+          <button type="submit" class="icon-btn send-btn" title="Enviar">${icon('send')}</button>
+        </form>
+      </div>
+      <div class="drop-hint"><div>${icon('paperclip')}<b>Solte para anexar</b><small>Fotos e vídeos</small></div></div>`;
+    wireComposer(ch);
+    if (!isMobile()) setTimeout(() => $('#msgInput')?.focus(), 0);
   }
 
   function renderMessages(channelId) {
@@ -522,23 +593,33 @@
         </div>
       </div>`;
     let prev = null;
-    for (const m of list) {
-      const grouped = prev && prev.author.id === m.author.id && m.ts - prev.ts < 5 * 60e3;
-      const time = new Date(m.ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-      html += grouped
-        ? `<div class="msg cont"><span class="ts-side">${time}</span><div class="body">${linkify(m.text)}</div></div>`
-        : `<div class="msg">${avatar(m.author, 'md')}<div class="msg-main">
-             <div class="meta"><b style="color:${nameColor(m.author.name)}">${esc(m.author.name)}</b><span class="ts">${fmtTime(m.ts)}</span></div>
-             <div class="body">${linkify(m.text)}</div></div></div>`;
-      prev = m;
-    }
+    for (const m of list) { html += messageHTML(m, prev); prev = m; }
     box.innerHTML = html;
     if (atBottom || list.at(-1)?.author.id === S.me.id) box.scrollTop = box.scrollHeight;
+    if (!box._wired) {
+      box._wired = true;
+      box._stick = true;
+      box.addEventListener('scroll', () => { box._stick = box.scrollHeight - box.scrollTop - box.clientHeight < 120; }, { passive: true });
+      // mídia que carrega depois mantém o chat "grudado" no fim
+      box.addEventListener('load', () => { if (box._stick) box.scrollTop = box.scrollHeight; }, true);
+      box.addEventListener('loadedmetadata', () => { if (box._stick) box.scrollTop = box.scrollHeight; }, true);
+      box.addEventListener('error', (e) => e.target.closest?.('.att')?.classList.add('gone'), true);
+    }
+  }
+
+  function appendMessage(msg) {
+    const box = $('#msgList');
+    if (!box) return;
+    const list = S.messages.get(msg.channelId) || [];
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+    box.insertAdjacentHTML('beforeend', messageHTML(msg, list[list.length - 2]));
+    if (atBottom || msg.author.id === S.me.id) box.scrollTop = box.scrollHeight;
   }
 
   /* -------------------------------- palco (voz) -------------------------------- */
   let stageObserver = null;
   function resetStage() {
+    ambient(false);
     stageObserver?.disconnect();
     stageObserver = null;
     S.tileEls.clear();
@@ -551,7 +632,7 @@
     main.innerHTML = `
       <div class="stage" id="stage">
         <header class="stage-head">
-          <div class="sh-left">${icon('volume', 'muted')}<b id="stageTitle"></b><span id="stageLive" class="sh-live"></span></div>
+          <div class="sh-left"><button class="icon-btn mobile-only" data-action="drawer" title="Menu">${icon('menu')}</button>${icon('volume', 'muted')}<b id="stageTitle"></b><span id="stageLive" class="sh-live"></span></div>
           <div class="sh-right">
             <span id="stageQuality"></span>
             <button class="icon-btn" data-action="layout" data-layout="grid" title="Grade">${icon('grid')}</button>
@@ -582,6 +663,12 @@
       <button class="tile-fs" title="Tela cheia">${icon('maximize')}</button>`;
     el.addEventListener('click', (e) => {
       if (e.target.closest('.tile-fs')) return toggleFullscreen(el);
+      if (el.classList.contains('pseudo-fs')) return;
+      // celular: tocar no perfil de alguém abre o volume individual
+      if (isMobile() && t.kind === 'user' && t.m.id !== S.me?.id) {
+        const r = el.getBoundingClientRect();
+        return openVolumeMenu(t.m.id, r.left + r.width / 2, r.top + r.height / 2);
+      }
       S.layoutPinned = true;
       if (S.layout === 'focus' && S.focusKey === t.key) { S.layout = 'grid'; S.focusKey = null; }
       else { S.layout = 'focus'; S.focusKey = t.key; }
@@ -604,6 +691,7 @@
     el.classList.toggle('mirror', isMe && t.kind === 'user');
     el.classList.toggle('speaking', t.kind === 'user' && S.speaking.has(m.id));
     if (t.kind === 'user') el.dataset.user = m.id;
+    el.dataset.volUser = m.id;
     el.style.setProperty('--tile-c', tileColor(m.name));
     const img = $('.tile-av img', el), src = avatarSrc(m);
     if (img.getAttribute('src') !== src) img.src = src;
@@ -612,7 +700,7 @@
       ? `<span class="live-pill">AO VIVO</span>${st.quality ? `<span class="q-pill">${esc(st.quality)}</span>` : ''}` : '');
     setHTML($('.tile-name', el), t.kind === 'screen'
       ? `${icon('screen')}<span>${esc(m.name)}${isMe ? ' (você)' : ''}</span>`
-      : `${st.deafened ? icon('headOff', 'red') : st.muted ? icon('micOff', 'red') : ''}<span>${esc(m.name)}</span>`);
+      : `${st.deafened ? icon('headOff', 'red') : st.muted ? icon('micOff', 'red') : ''}<span>${esc(m.name)}</span>${isMe ? '' : volBadge(m)}`);
   }
 
   function updateStage() {
@@ -632,6 +720,7 @@
     let focused = null;
     if (S.layout === 'focus') focused = tiles.find((t) => t.key === S.focusKey) || screens[0] || null;
     $('#stage').classList.toggle('is-focus', !!focused);
+    ambient(focused?.kind === 'screen');
 
     const box = $('#tiles'), fm = $('#focusMain'), keep = new Set();
     for (const t of tiles) {
@@ -646,7 +735,10 @@
       const el = S.tileEls.get(t.key);
       if (box.children[i] !== el) box.insertBefore(el, box.children[i] || null);
     });
-    for (const [k, el] of S.tileEls) if (!keep.has(k)) { el.remove(); S.tileEls.delete(k); }
+    for (const [k, el] of S.tileEls) if (!keep.has(k)) {
+      if (el.classList.contains('pseudo-fs')) exitPseudoFs(); // transmissão acabou durante a tela cheia
+      el.remove(); S.tileEls.delete(k);
+    }
     // reinserir um <video> no DOM pausa a reprodução — retoma
     for (const el of S.tileEls.values()) { const v = $('video', el); if (v.srcObject && v.paused) v.play().catch(() => {}); }
 
@@ -664,7 +756,7 @@
     setHTML($('#controls'), `
       <div class="ctl-group">
         <button class="ctl ${cam ? 'on' : ''}" data-action="toggle-camera" title="${cam ? 'Desligar câmera' : 'Ligar câmera'}">${icon(cam ? 'camera' : 'camOff')}</button>
-        <button class="ctl share ${scr ? 'on' : ''}" data-action="toggle-screen" title="${scr ? 'Parar transmissão' : 'Compartilhar tela'}">${icon(scr ? 'screenStop' : 'screenShare')}</button>
+        ${CAN_SHARE ? `<button class="ctl share ${scr ? 'on' : ''}" data-action="toggle-screen" title="${scr ? 'Parar transmissão' : 'Compartilhar tela'}">${icon(scr ? 'screenStop' : 'screenShare')}</button>` : ''}
         <button class="ctl mic ${S.muted ? 'off' : ''}" data-action="toggle-mute" title="${S.muted ? 'Reativar microfone' : 'Silenciar'}">${icon(S.muted ? 'micOff' : 'mic')}</button>
         <button class="ctl ${S.deafened ? 'off-soft' : ''}" data-action="toggle-deafen" title="${S.deafened ? 'Reativar áudio' : 'Desativar áudio'}">${icon(S.deafened ? 'headOff' : 'headphones')}</button>
         <button class="ctl hang" data-action="leave-voice" title="Desconectar">${icon('phoneOff')}</button>
@@ -693,7 +785,27 @@
     box.style.setProperty('--tw', Math.floor(best) + 'px');
   }
 
+  /* Tela cheia no celular: o WebView do Android não expõe a Fullscreen API de forma confiável,
+     então o tile ocupa a tela via CSS, gira para paisagem e esconde a barra de status. */
+  function enterPseudoFs(el) {
+    exitPseudoFs();
+    el.classList.add('pseudo-fs');
+    document.documentElement.classList.add('has-pseudo-fs');
+    PLUG('ScreenOrientation')?.lock({ orientation: 'landscape' }).catch(() => {});
+    PLUG('StatusBar')?.hide().catch(() => {});
+  }
+  function exitPseudoFs() {
+    const el = $('.pseudo-fs');
+    if (!el) return false;
+    el.classList.remove('pseudo-fs');
+    document.documentElement.classList.remove('has-pseudo-fs');
+    PLUG('ScreenOrientation')?.unlock().catch(() => {});
+    PLUG('StatusBar')?.show().catch(() => {});
+    return true;
+  }
+
   function toggleFullscreen(el) {
+    if (IS_TOUCH || IS_NATIVE) { if (el.classList.contains('pseudo-fs')) exitPseudoFs(); else enterPseudoFs(el); return; }
     if (document.fullscreenElement) document.exitFullscreen();
     else el.requestFullscreen?.().catch(() => {});
   }
@@ -708,13 +820,16 @@
         socket: S.socket, myId: S.me.id, serverId, channelId,
         muted: S.muted, deafened: S.deafened,
         getMemberState: (id) => memberIn(serverId, id)?.state,
+        getVolume: (id, kind) => { const m = memberIn(serverId, id); return m ? getVol(m, kind) : 1; },
         onChange: () => { if (S.view === 'voice') updateStage(); renderVoicePanel(); },
         onSpeaking: (set) => { S.speaking = set; applySpeaking(); },
       });
       S.voice = v; // antes do start(): sinais podem chegar logo após o join
       await v.start();
-      if (v.micError) toast('Microfone indisponível — você entrou sem áudio.', 'err');
+      if (v.micError) toast(window.isSecureContext ? 'Microfone indisponível — você entrou sem áudio.'
+        : 'Sem microfone: o navegador só libera em HTTPS. Você pode assistir e ouvir normalmente.', 'err');
       S.view = 'voice';
+      keepAwake(true);
       S.layout = 'grid'; S.layoutPinned = false; S.focusKey = null; S.prevScreens = new Set();
       sfx.join();
       renderAll();
@@ -727,8 +842,25 @@
     }
   }
 
+  /* Tela ligada durante a chamada (senão o Android apaga a tela no meio do filme). */
+  let wakeSentinel = null;
+  async function keepAwake(on) {
+    S.wantAwake = on;
+    const ka = PLUG('KeepAwake');
+    try {
+      if (ka) return on ? await ka.keepAwake() : await ka.allowSleep();
+      if (on && !wakeSentinel && navigator.wakeLock) wakeSentinel = await navigator.wakeLock.request('screen');
+      if (!on && wakeSentinel) { await wakeSentinel.release(); wakeSentinel = null; }
+    } catch {}
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && S.wantAwake) { wakeSentinel = null; keepAwake(true); }
+  });
+
   function teardownVoice(render = true) {
     if (!S.voice) return;
+    exitPseudoFs();
+    keepAwake(false);
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     S.voice.leave();
     S.voice = null;
@@ -764,6 +896,7 @@
   }
 
   function toggleScreen() {
+    if (!CAN_SHARE) return toast('Transmitir tela está disponível no app de PC. No celular você assiste, fala e usa a câmera.');
     if (!S.voice) return toast('Entre em um canal de voz para transmitir.');
     if (S.voice.screen) { S.voice.stopScreen(); renderVoicePanel(); return; }
     openScreenPicker();
@@ -984,11 +1117,14 @@
     'toggle-camera': toggleCamera,
     'toggle-screen': toggleScreen,
     'leave-voice': () => teardownVoice(),
-    'open-stage': () => { if (S.voice) { S.view = 'voice'; renderAll(); } },
+    'open-stage': () => { closeDrawer(); if (S.voice) { S.view = 'voice'; renderAll(); } },
+    drawer: () => toggleDrawer(),
     'open-text': () => { if (S.voice) S.activeServerId = S.voice.serverId; S.view = 'text'; renderAll(); },
     layout: (el) => { S.layoutPinned = true; S.layout = el.dataset.layout; if (S.layout === 'grid') S.focusKey = null; updateStage(); },
     'stage-fullscreen': () => toggleFullscreen($('#stage')),
-    'toggle-members': () => { S.showMembers = !S.showMembers; LS.set('showMembers', S.showMembers); renderMembers(); $('[data-action=toggle-members]')?.classList.toggle('on', S.showMembers); },
+    'toggle-members': () => {
+      if (isMobile()) { closeDrawer(); document.documentElement.classList.toggle('members-open'); return; }
+      S.showMembers = !S.showMembers; LS.set('showMembers', S.showMembers); renderMembers(); $('[data-action=toggle-members]')?.classList.toggle('on', S.showMembers); },
     'focus-composer': () => $('#msgInput')?.focus(),
     'join-first-voice': () => {
       const srv = activeServer();
@@ -996,6 +1132,10 @@
       if (ch) joinVoice(srv.id, ch.id);
     },
     profile: profileModal,
+    attach: () => $('#fileInput')?.click(),
+    emoji: () => toggleEmoji(),
+    lightbox: (el) => openLightbox(el.dataset.src),
+    'unstage': (el) => unstage(el.dataset.id),
   };
 
   function leaveServer(srv) {
@@ -1023,6 +1163,7 @@
 
     const ch = e.target.closest('[data-channel]');
     if (ch) {
+      closeDrawer();
       const srv = activeServer();
       if (ch.dataset.type === 'text') {
         S.activeChannel[srv.id] = ch.dataset.channel;
@@ -1039,7 +1180,7 @@
   });
 
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && $('#modalRoot').children.length) closeModal();
+    if (e.key === 'Escape') { if (!closePopovers() && $('#modalRoot').children.length) closeModal(); }
     if (!S.me || !(e.ctrlKey && e.shiftKey)) return;
     const k = e.key.toLowerCase();
     if (k === 'm') { e.preventDefault(); setMute(!S.muted); }
@@ -1047,6 +1188,443 @@
   });
 
   window.addEventListener('beforeunload', () => S.voice?.leave());
+
+  /* ======================= volume individual (local) ======================= */
+  // Chave = apelido: o id muda a cada conexão, o apelido costuma ficar.
+  const volOf = (m) => S.volumes[m.name] || {};
+  function getVol(m, kind) {
+    const v = volOf(m);
+    if (v.muted) return 0;
+    return kind === 'stream' ? (v.stream ?? 1) : (v.voice ?? 1);
+  }
+  function setVol(m, patch) {
+    const v = { ...volOf(m), ...patch };
+    if ((v.voice ?? 1) === 1 && (v.stream ?? 1) === 1 && !v.muted) delete S.volumes[m.name];
+    else S.volumes[m.name] = v;
+    LS.set('volumes', S.volumes);
+    S.voice?.applyVolumes();
+    renderSidebar();
+    if (S.view === 'voice') updateStage();
+  }
+  function volBadge(m) {
+    const v = volOf(m);
+    if (v.muted) return `<span class="vol-badge off" title="Silenciado só para você">${icon('volX')}</span>`;
+    if ((v.voice ?? 1) !== 1) return `<span class="vol-badge" title="Volume só para você">${Math.round(v.voice * 100)}%</span>`;
+    return '';
+  }
+  function findMember(id) {
+    for (const srv of S.servers.values()) { const m = srv.members.find((x) => x.id === id); if (m) return m; }
+    return null;
+  }
+
+  function closeVolMenu() {
+    const p = $('.vol-pop');
+    $('.vol-back')?.remove();
+    if (!p) return false;
+    p.remove();
+    return true;
+  }
+
+  function openVolumeMenu(userId, x, y) {
+    const m = findMember(userId);
+    if (!m || !S.me) return;
+    closeVolMenu(); closeMenu(); closeEmoji();
+    S.volOpenedAt = Date.now();
+    if (m.id === S.me.id) return toast('Esse é você — use os botões de microfone e áudio.');
+    const inCall = !!S.voice && m.voice?.channelId === S.voice.channelId;
+    const v = volOf(m);
+    const slider = (kind, label, ic, val) => `
+      <div class="vol-row">
+        <div class="vol-label">${icon(ic)}<span>${label}</span><output data-out="${kind}">${Math.round(val * 100)}%</output></div>
+        <input type="range" class="vol-range" data-kind="${kind}" min="0" max="200" step="5" value="${Math.round(val * 100)}" style="--p:${val * 50}%" aria-label="${label}">
+        <div class="vol-scale"><span>0</span><span>100%</span><span>200%</span></div>
+      </div>`;
+    const pop = document.createElement('div');
+    pop.className = 'vol-pop';
+    pop.setAttribute('role', 'dialog');
+    pop.innerHTML = `
+      <div class="vol-head">${avatar(m, 'md')}<div><b>${esc(m.name)}</b><small>${inCall ? 'Só você ouve essa mudança' : 'Vale quando vocês estiverem na mesma sala'}</small></div></div>
+      ${slider('voice', 'Voz', 'mic', v.voice ?? 1)}
+      ${m.state?.screen || v.stream != null ? slider('stream', 'Transmissão', 'screen', v.stream ?? 1) : ''}
+      <div class="vol-actions">
+        <button class="vol-btn ${v.muted ? 'on' : ''}" data-vol="mute">${icon(v.muted ? 'volX' : 'vol')}<span>${v.muted ? 'Silenciado para você' : 'Silenciar para mim'}</span></button>
+        <button class="vol-btn" data-vol="reset" title="Voltar a 100%">${icon('reset')}<span>100%</span></button>
+      </div>`;
+    if (isMobile()) {
+      const back = document.createElement('div');
+      back.className = 'vol-back';
+      back.addEventListener('click', closeVolMenu);
+      document.body.appendChild(back);
+      pop.classList.add('sheet');
+    }
+    document.body.appendChild(pop);
+    if (!isMobile()) {
+      const r = pop.getBoundingClientRect();
+      pop.style.left = Math.max(12, Math.min(x, innerWidth - r.width - 12)) + 'px';
+      pop.style.top = Math.max(12, Math.min(y, innerHeight - r.height - 12)) + 'px';
+    }
+    pop.addEventListener('input', (e) => {
+      const r = e.target.closest('.vol-range');
+      if (!r) return;
+      let val = Number(r.value);
+      if (Math.abs(val - 100) <= 5) { val = 100; r.value = 100; } // "ímã" nos 100%
+      r.style.setProperty('--p', val / 2 + '%');
+      $(`[data-out=${r.dataset.kind}]`, pop).textContent = val + '%';
+      setVol(m, { [r.dataset.kind]: val / 100, muted: false });
+      const mb = $('[data-vol=mute]', pop);
+      mb.classList.remove('on');
+      mb.innerHTML = `${icon('vol')}<span>Silenciar para mim</span>`;
+    });
+    pop.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-vol]');
+      if (!b) return;
+      if (b.dataset.vol === 'mute') setVol(m, { muted: !volOf(m).muted });
+      else setVol(m, { voice: 1, stream: 1, muted: false });
+      openVolumeMenu(userId, parseFloat(pop.style.left) || x, parseFloat(pop.style.top) || y); // redesenha
+    });
+    setTimeout(() => document.addEventListener('pointerdown', function h(ev) {
+      if (!document.body.contains(pop)) return document.removeEventListener('pointerdown', h, true);
+      if (!pop.contains(ev.target)) { closeVolMenu(); document.removeEventListener('pointerdown', h, true); }
+    }, true), 0);
+  }
+
+  // PC: botão direito  ·  celular: pressionar e segurar
+  document.addEventListener('contextmenu', (e) => {
+    const u = e.target.closest('[data-vol-user]');
+    if (!u || !S.me) return;
+    e.preventDefault();
+    if (Date.now() - (S.volOpenedAt || 0) < 700) return;
+    openVolumeMenu(u.dataset.volUser, e.clientX, e.clientY);
+  });
+  let press = null;
+  document.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse') return;
+    const u = e.target.closest('[data-vol-user]');
+    if (!u || !S.me) return;
+    const p0 = { x: e.clientX, y: e.clientY };
+    press = {
+      ...p0,
+      t: setTimeout(() => {
+        press = null;
+        if (Date.now() - (S.volOpenedAt || 0) < 700) return;
+        S.suppressClickUntil = Date.now() + 650;
+        navigator.vibrate?.(12);
+        openVolumeMenu(u.dataset.volUser, p0.x, p0.y);
+      }, 480),
+    };
+  }, { passive: true });
+  const cancelPress = (e) => {
+    if (!press) return;
+    if (e.type === 'pointermove' && Math.hypot(e.clientX - press.x, e.clientY - press.y) < 10) return;
+    clearTimeout(press.t);
+    press = null;
+  };
+  ['pointermove', 'pointerup', 'pointercancel'].forEach((t) => document.addEventListener(t, cancelPress, { passive: true }));
+  // o "click" que vem depois de um long-press não deve trocar o foco do palco
+  document.addEventListener('click', (e) => {
+    if (Date.now() < (S.suppressClickUntil || 0)) { e.stopPropagation(); e.preventDefault(); }
+  }, true);
+
+  /* ============================== chat avançado ============================== */
+  const ACCEPT = 'image/png,image/jpeg,image/gif,image/webp,video/mp4,video/webm,video/quicktime';
+  const KIND_OF = (type) => (/^image\/(png|jpeg|gif|webp)$/.test(type) ? 'image' : /^video\/(mp4|webm|quicktime)$/.test(type) ? 'video' : null);
+  const mediaUrl = (id) => `${profile.serverUrl}/media/${id}`;
+  const fmtSize = (b) => (b >= 1048576 ? (b / 1048576).toFixed(1).replace('.', ',') + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB');
+  const isJumbo = (t) => {
+    if (!t || t.length > 40) return false;
+    const rest = t.replace(/[\p{Extended_Pictographic}‍️\u{1F3FB}-\u{1F3FF}\s]/gu, '');
+    return !rest && /\p{Extended_Pictographic}/u.test(t);
+  };
+
+  function attachmentHTML(a) {
+    const url = esc(mediaUrl(a.id));
+    let style = '';
+    if (a.w && a.h) {
+      const k = Math.min(1, 420 / a.w, 340 / a.h);
+      style = `width:${Math.max(120, Math.round(a.w * k))}px;aspect-ratio:${a.w}/${a.h}`;
+    }
+    if (a.kind === 'image') {
+      return `<button class="att att-img" style="${style}" data-action="lightbox" data-src="${url}" title="${esc(a.name)}">
+        <img src="${url}" alt="${esc(a.name)}" loading="lazy" draggable="false"><span class="att-gone">Arquivo expirado</span></button>`;
+    }
+    return `<div class="att att-vid" style="${style}"><video src="${url}" controls preload="metadata" playsinline></video>
+      <span class="att-gone">Vídeo expirado</span></div>
+      <div class="att-meta">${icon('film')}<span>${esc(a.name)}</span><small>${fmtSize(a.size)}</small></div>`;
+  }
+
+  function messageHTML(m, prev) {
+    const grouped = prev && prev.author.id === m.author.id && m.ts - prev.ts < 5 * 60e3;
+    const time = new Date(m.ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    const body = (m.text ? `<div class="body ${isJumbo(m.text) ? 'jumbo' : ''}">${linkify(m.text)}</div>` : '')
+      + (m.attachment ? attachmentHTML(m.attachment) : '');
+    if (grouped) return `<div class="msg cont"><span class="ts-side">${time}</span><div class="msg-main">${body}</div></div>`;
+    return `<div class="msg">${avatar(m.author, 'md')}<div class="msg-main">
+      <div class="meta"><b style="color:${nameColor(m.author.name)}">${esc(m.author.name)}</b><span class="ts">${fmtTime(m.ts)}</span></div>
+      ${body}</div></div>`;
+  }
+
+  /* ---- anexos: seleção, colar, arrastar ---- */
+  function mediaDims(item) {
+    return new Promise((resolve) => {
+      const done = (w, h) => { item.w = w || 0; item.h = h || 0; resolve(); };
+      if (item.kind === 'image') {
+        const img = new Image();
+        img.onload = () => done(img.naturalWidth, img.naturalHeight);
+        img.onerror = () => done();
+        img.src = item.url;
+      } else {
+        const v = document.createElement('video');
+        v.preload = 'metadata';
+        v.muted = true;
+        v.onloadedmetadata = () => done(v.videoWidth, v.videoHeight);
+        v.onerror = () => done();
+        v.src = item.url;
+      }
+    });
+  }
+
+  async function addFiles(files) {
+    for (const file of [...files]) {
+      if (S.staged.length >= 10) { toast('No máximo 10 anexos por vez.', 'err'); break; }
+      const kind = KIND_OF(file.type);
+      if (!kind) { toast(`"${file.name}" não é uma foto ou vídeo suportado.`, 'err'); continue; }
+      const maxMB = kind === 'image' ? CFG.maxImageMB : CFG.maxVideoMB;
+      if (file.size > maxMB * 1048576) { toast(`"${file.name}" passa de ${maxMB} MB.`, 'err'); continue; }
+      const item = { id: Math.random().toString(36).slice(2), file, kind, url: URL.createObjectURL(file), progress: 0 };
+      S.staged.push(item);
+      renderTray();
+      mediaDims(item);
+    }
+    if (!isMobile()) $('#msgInput')?.focus();
+  }
+
+  function unstage(id) {
+    const i = S.staged.findIndex((x) => x.id === id);
+    if (i < 0 || S.staged[i].uploading) return;
+    URL.revokeObjectURL(S.staged[i].url);
+    S.staged.splice(i, 1);
+    renderTray();
+  }
+
+  function renderTray() {
+    const tray = $('#tray');
+    if (!tray) return;
+    tray.classList.toggle('hidden', !S.staged.length);
+    tray.innerHTML = S.staged.map((it) => `
+      <div class="tray-item ${it.uploading ? 'busy' : ''} ${it.error ? 'error' : ''}" data-tray="${it.id}">
+        <div class="tray-thumb">${it.kind === 'image' ? `<img src="${it.url}" alt="">` : `<video src="${it.url}" muted preload="metadata"></video><span class="tray-kind">${icon('film')}</span>`}</div>
+        <div class="tray-name"><span>${esc(it.file.name)}</span><small>${it.error ? esc(it.error) : fmtSize(it.file.size)}</small></div>
+        <div class="tray-bar"><i style="width:${Math.round(it.progress * 100)}%"></i></div>
+        ${it.uploading ? '' : `<button type="button" class="tray-x" data-action="unstage" data-id="${it.id}" title="Remover">${icon('x')}</button>`}
+      </div>`).join('');
+  }
+  const trayProgress = (it) => {
+    const bar = $(`[data-tray="${it.id}"] .tray-bar i`);
+    if (bar) bar.style.width = Math.round(it.progress * 100) + '%';
+  };
+
+  function uploadFile(item) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${profile.serverUrl}/upload`);
+      xhr.setRequestHeader('Content-Type', item.file.type);
+      xhr.setRequestHeader('X-Cinecria-Token', S.token || '');
+      xhr.setRequestHeader('X-File-Name', encodeURIComponent(item.file.name));
+      xhr.upload.onprogress = (e) => { if (e.lengthComputable) { item.progress = e.loaded / e.total; trayProgress(item); } };
+      xhr.onload = () => {
+        let j = {};
+        try { j = JSON.parse(xhr.responseText); } catch {}
+        if (xhr.status === 200 && j.id) resolve(j);
+        else reject(new Error(j.error || `Falha no envio (${xhr.status})`));
+      };
+      xhr.onerror = () => reject(new Error('Falha de rede no envio.'));
+      xhr.send(item.file);
+    });
+  }
+
+  async function sendComposer(ch) {
+    const input = $('#msgInput');
+    const text = input.value.trim();
+    const items = S.staged.filter((x) => !x.uploading);
+    if (!text && !items.length) return;
+    input.value = '';
+    closeEmoji();
+    if (!items.length) { S.socket.emit('chat:send', { channelId: ch.id, text }); return; }
+
+    let captionSent = false;
+    for (const it of items) {
+      it.uploading = true; it.error = null; it.progress = 0;
+      renderTray();
+      try {
+        const up = await uploadFile(it);
+        S.socket.emit('chat:send', { channelId: ch.id, text: captionSent ? '' : text, attachment: { id: up.id, w: it.w, h: it.h } });
+        captionSent = true;
+        URL.revokeObjectURL(it.url);
+        S.staged = S.staged.filter((x) => x !== it);
+      } catch (e) {
+        it.uploading = false;
+        it.error = e.message;
+        toast(`"${it.file.name}": ${e.message}`, 'err');
+      }
+      renderTray();
+    }
+    if (!captionSent && text) S.socket.emit('chat:send', { channelId: ch.id, text });
+  }
+
+  function wireComposer(ch) {
+    renderTray();
+    $('#composerForm').addEventListener('submit', (e) => { e.preventDefault(); sendComposer(ch); });
+    $('#fileInput').addEventListener('change', (e) => { addFiles(e.target.files); e.target.value = ''; });
+    $('#msgInput').addEventListener('paste', (e) => {
+      const files = [...(e.clipboardData?.files || [])];
+      if (files.length) { e.preventDefault(); addFiles(files); }
+    });
+    const main = $('#main');
+    let depth = 0;
+    const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+    main.ondragenter = (e) => { if (!hasFiles(e)) return; depth++; main.classList.add('dragging'); };
+    main.ondragleave = () => { if (--depth <= 0) { depth = 0; main.classList.remove('dragging'); } };
+    main.ondragover = (e) => { if (hasFiles(e)) e.preventDefault(); };
+    main.ondrop = (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      depth = 0;
+      main.classList.remove('dragging');
+      addFiles(e.dataTransfer.files);
+    };
+  }
+
+  /* ---- seletor de emojis ---- */
+  const EMOJI = [
+    ['🎬', 'Cinema', '🎬 🍿 🎥 📽️ 🎞️ 🎟️ 🎫 📺 🎮 🕹️ 🎧 🎤 🎵 🎶 🎭 🌟 ⭐ 🏆 🥇 👑 👽 🤖 👻 🧟 🧛 🦖 🐉 🚀 🛸 🌌 🌙 🔥 💥 ⚡ 🎃 🍕 🍔 🌭 🍟 🥤 🧃 🍫 🍩 🍭 🍪 🧋 🍻'],
+    ['😀', 'Carinhas', '😀 😃 😄 😁 😆 😅 🤣 😂 🙂 😉 😊 😇 🥰 😍 🤩 😘 😋 😛 😜 🤪 😝 🤑 🤗 🤭 🤫 🤔 🤐 🤨 😐 😑 😶 😏 😒 🙄 😬 😮‍💨 😌 😔 😪 🤤 😴 😷 🤒 🤢 🤮 🥵 🥶 🥴 😵 🤯 🤠 🥳 😎 🤓 🧐 😕 😟 🙁 😮 😯 😲 😳 🥺 🥹 😦 😧 😨 😰 😥 😢 😭 😱 😖 😣 😞 😓 😩 😫 🥱 😤 😡 😠 🤬 😈 💀 🤡 💩'],
+    ['👍', 'Gestos', '👍 👎 👏 🙌 👐 🤝 🙏 ✌️ 🤞 🫰 🤟 🤘 👌 🤌 🤏 👈 👉 👆 👇 ☝️ ✋ 🤚 🖐️ 🖖 👋 🤙 💪 🫶 👀 🧠 🫡 🫠 🤷 🤦 🙋 🙆 🙅 💃 🕺'],
+    ['❤️', 'Corações', '❤️ 🧡 💛 💚 💙 💜 🖤 🤍 🤎 💔 ❣️ 💕 💞 💓 💗 💖 💘 💝 💯 ✨ 💫 🎉 🎊 🎈 🎁 ✅ ❌ ❓ ❗ 💤 💬 🔔'],
+  ].map(([ico, name, list]) => ({ ico, name, list: list.split(' ') }));
+
+  function closeEmoji() { const p = $('.emoji-pop'); if (!p) return false; p.remove(); return true; }
+  function toggleEmoji() {
+    if (closeEmoji()) return;
+    const recent = LS.get('emojiRecent', []);
+    const cats = recent.length ? [{ ico: '🕘', name: 'Recentes', list: recent }, ...EMOJI] : EMOJI;
+    const pop = document.createElement('div');
+    pop.className = 'emoji-pop';
+    pop.innerHTML = `
+      <div class="emoji-tabs">${cats.map((c, i) => `<button type="button" class="emoji-tab ${i === 0 ? 'on' : ''}" data-cat="${i}" title="${c.name}">${c.ico}</button>`).join('')}</div>
+      <div class="emoji-title">${cats[0].name}</div>
+      <div class="emoji-grid"></div>`;
+    const grid = $('.emoji-grid', pop);
+    const show = (i) => {
+      grid.innerHTML = cats[i].list.map((e) => `<button type="button" class="emo" data-emo="${e}">${e}</button>`).join('');
+      $('.emoji-title', pop).textContent = cats[i].name;
+      $$('.emoji-tab', pop).forEach((b) => b.classList.toggle('on', Number(b.dataset.cat) === i));
+      grid.scrollTop = 0;
+    };
+    pop.addEventListener('click', (e) => {
+      const tab = e.target.closest('[data-cat]');
+      if (tab) return show(Number(tab.dataset.cat));
+      const emo = e.target.closest('[data-emo]');
+      if (!emo) return;
+      const input = $('#msgInput');
+      const a = input.selectionStart ?? input.value.length, b = input.selectionEnd ?? a;
+      input.setRangeText(emo.dataset.emo, a, b, 'end');
+      if (!isMobile()) input.focus();
+      LS.set('emojiRecent', [emo.dataset.emo, ...LS.get('emojiRecent', []).filter((x) => x !== emo.dataset.emo)].slice(0, 32));
+    });
+    $('#composer').appendChild(pop);
+    show(0);
+    setTimeout(() => document.addEventListener('pointerdown', function h(ev) {
+      if (!document.body.contains(pop)) return document.removeEventListener('pointerdown', h, true);
+      if (!pop.contains(ev.target) && !ev.target.closest('.emoji-btn')) { closeEmoji(); document.removeEventListener('pointerdown', h, true); }
+    }, true), 0);
+  }
+
+  /* ---- visualizador de imagens ---- */
+  function closeLightbox() { const l = $('.lightbox'); if (!l) return false; l.remove(); return true; }
+  function openLightbox(src) {
+    closeLightbox();
+    const l = document.createElement('div');
+    l.className = 'lightbox';
+    l.innerHTML = `<img src="${esc(src)}" alt="">
+      <div class="lb-bar"><a class="lb-btn" href="${esc(src)}" target="_blank" rel="noopener">${icon('external')}Abrir original</a>
+      <button class="lb-btn" type="button">${icon('x')}Fechar</button></div>`;
+    l.addEventListener('click', (e) => { if (!e.target.closest('a')) closeLightbox(); });
+    document.body.appendChild(l);
+  }
+
+  const closePopovers = () => closeVolMenu() || closeEmoji() || closeLightbox();
+
+  /* ================== luz ambiente da transmissão ("ambilight") ================== */
+  // A cor média da tela em foco tinge o palco — efeito de sala escura iluminada pelo filme.
+  let ambTimer = null;
+  const ambCanvas = document.createElement('canvas');
+  ambCanvas.width = 24; ambCanvas.height = 14;
+  const ambCtx = ambCanvas.getContext('2d', { willReadFrequently: true });
+  function ambient(on) {
+    if (!on) {
+      clearInterval(ambTimer); ambTimer = null;
+      $('#stage')?.style.removeProperty('--amb');
+      return;
+    }
+    if (ambTimer) return;
+    ambTimer = setInterval(() => {
+      const st = $('#stage');
+      if (!st) return ambient(false);
+      const v = $('#focusMain .tile.has-video video');
+      if (!v || v.readyState < 2) return;
+      try {
+        ambCtx.drawImage(v, 0, 0, 24, 14);
+        const d = ambCtx.getImageData(0, 0, 24, 14).data;
+        let r = 0, g = 0, b = 0;
+        for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; }
+        const n = d.length / 4, k = (c) => Math.min(255, Math.round((c / n) * 1.35 + 8));
+        st.style.setProperty('--amb', `rgb(${k(r)} ${k(g)} ${k(b)})`);
+      } catch {}
+    }, 350);
+  }
+
+  /* ============================ gaveta (mobile) ============================ */
+  const root = document.documentElement;
+  function openDrawer() { root.classList.remove('members-open'); root.classList.add('drawer-open'); }
+  function closeDrawer() { root.classList.remove('drawer-open'); }
+  function toggleDrawer() { root.classList.contains('drawer-open') ? closeDrawer() : openDrawer(); }
+  $('#drawerBack').addEventListener('click', () => { closeDrawer(); root.classList.remove('members-open'); });
+
+  // Gestos: arrastar da borda esquerda abre; arrastar para a esquerda fecha.
+  let touch0 = null;
+  document.addEventListener('touchstart', (e) => {
+    if (!isMobile() || $('.pseudo-fs') || $('#modalRoot').children.length) return;
+    const t = e.touches[0];
+    touch0 = { x: t.clientX, y: t.clientY, edge: t.clientX < 28 };
+  }, { passive: true });
+  document.addEventListener('touchend', (e) => {
+    if (!touch0) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - touch0.x, dy = Math.abs(t.clientY - touch0.y);
+    if (dy < 60) {
+      if (touch0.edge && dx > 60) openDrawer();
+      else if (root.classList.contains('drawer-open') && dx < -60) closeDrawer();
+    }
+    touch0 = null;
+  }, { passive: true });
+  matchMedia('(max-width: 820px), (max-height: 520px) and (pointer: coarse)').addEventListener('change', () => { closeDrawer(); root.classList.remove('members-open'); layoutTiles(); });
+
+  if (IS_NATIVE) {
+    PLUG('StatusBar')?.setBackgroundColor({ color: '#0c0c14' }).catch(() => {});
+    PLUG('StatusBar')?.setStyle({ style: 'DARK' }).catch(() => {});
+    // Botão "voltar" do Android: fecha a camada mais de cima antes de sair.
+    PLUG('App')?.addListener('backButton', () => {
+      if (closePopovers()) return;
+      if ($('#modalRoot').children.length) return closeModal();
+      if (exitPseudoFs()) return;
+      if ($('.menu')) return closeMenu();
+      if (root.classList.contains('members-open')) return root.classList.remove('members-open');
+      if (root.classList.contains('drawer-open')) return closeDrawer();
+      if (S.me && S.view === 'voice') { S.view = 'text'; return renderAll(); }
+      if (S.me) return openDrawer();
+      PLUG('App').minimizeApp();
+    });
+  }
 
   initLogin();
 })();

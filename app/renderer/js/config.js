@@ -3,8 +3,15 @@
  * Edite aqui o servidor padrão e os servidores ICE (STUN/TURN).
  */
 window.CINECRIA_CONFIG = {
-  // Quando a UI é servida pelo próprio servidor (modo navegador), usa a mesma origem.
-  defaultServerUrl: location.protocol.startsWith('http') ? location.origin : 'http://localhost:3001',
+  // - App Android (Capacitor): o usuário informa o IP do PC na tela de entrada.
+  // - Navegador servido pelo servidor: mesma origem.  - Electron (file://): localhost.
+  defaultServerUrl: window.Capacitor?.isNativePlatform?.() ? ''
+    : location.protocol.startsWith('http') ? location.origin : 'http://localhost:3001',
+  defaultPort: 3001,
+
+  // Limites dos anexos do chat (o servidor valida de novo: MAX_IMAGE_MB / MAX_VIDEO_MB)
+  maxImageMB: 15,
+  maxVideoMB: 100,
 
   // STUN resolve a maioria das redes domésticas. Para redes restritivas (4G, empresas,
   // NAT simétrico) adicione um TURN próprio (ex.: coturn) — veja o README.

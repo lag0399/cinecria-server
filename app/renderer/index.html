@@ -2,9 +2,10 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+  <meta name="theme-color" content="#0c0c14" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src * ws: wss: http: https:;" />
+        content="default-src 'self'; img-src 'self' data: blob: http: https:; media-src 'self' blob: mediastream: http: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src * ws: wss: http: https:;" />
   <title>Cinecria</title>
   <link rel="stylesheet" href="styles.css" />
   <!-- socket.io client: do node_modules (Electron) com fallback para o servidor (modo navegador) -->
@@ -22,7 +23,7 @@
         <div class="brand-logo" id="brandLogo"></div>
         <div>
           <h1>Cinecria</h1>
-          <p>Assista junto. Em alta qualidade.</p>
+          <p>Sua sala de cinema com os amigos.</p>
         </div>
       </div>
 
@@ -43,7 +44,12 @@
 
       <details class="adv">
         <summary>Servidor Cinecria</summary>
-        <input id="srvUrl" placeholder="http://localhost:3001" spellcheck="false" />
+        <input id="srvUrl" placeholder="IP do PC, ex.: 192.168.0.10" spellcheck="false" autocapitalize="off" inputmode="url" />
+        <div class="srv-tools">
+          <button type="button" class="chip" id="srvTest">Testar conexão</button>
+          <button type="button" class="chip native-only" id="srvEmu">Emulador Android</button>
+        </div>
+        <small class="srv-hint" id="srvHint"></small>
       </details>
 
       <button class="btn primary big" id="enterBtn" type="button">Entrar</button>
@@ -64,6 +70,7 @@
     <aside id="members" class="members"></aside>
   </div>
 
+  <div id="drawerBack" class="drawer-back"></div>
   <div id="modalRoot"></div>
   <div id="toasts" class="toasts"></div>
   <div id="audioSink" hidden></div>

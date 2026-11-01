@@ -8,6 +8,8 @@
  *    o id de cada stream é publicado no estado do usuário, assim o outro lado
  *    sabe o que é microfone, câmera ou tela.
  *  - tuning de qualidade: bitrate/FPS por sender, contentHint, Opus estéreo.
+ *  - volume individual LOCAL por participante (voz e transmissão, 0–200%):
+ *    só muda o que VOCÊ ouve — nada é alterado no que é enviado aos outros.
  */
 (function () {
   const CFG = window.CINECRIA_CONFIG;
@@ -31,7 +33,7 @@
       this.makingOffer = false;
       this.ignoreOffer = false;
       this.streams = new Map();   // streamId -> MediaStream remoto
-      this.audioEls = new Map();  // trackId -> <audio>
+      this.audioEls = new Map();  // trackId -> { el, streamId, gain? }
       this.senders = {};          // mic | cam | screenV | screenA -> RTCRtpSender
 
       const pc = (this.pc = new RTCPeerConnection({ iceServers: CFG.iceServers, bundlePolicy: 'max-bundle' }));
@@ -57,7 +59,7 @@
       pc.ontrack = ({ track, streams }) => {
         const stream = streams[0] || new MediaStream([track]);
         this.streams.set(stream.id, stream);
-        if (track.kind === 'audio') this.attachAudio(track);
+        if (track.kind === 'audio') this.attachAudio(track, stream.id);
         stream.onremovetrack = () => {
           if (!stream.getTracks().length) this.streams.delete(stream.id);
           session.changed();
@@ -92,21 +94,24 @@
       }
     }
 
-    attachAudio(track) {
+    /** Cada trilha de áudio remota ganha seu próprio <audio> → volume independente por pessoa. */
+    attachAudio(track, streamId) {
       const el = new Audio();
       el.autoplay = true;
       el.srcObject = new MediaStream([track]);
-      el.muted = this.session.deafened;
       document.getElementById('audioSink').appendChild(el);
       el.play().catch(() => {});
-      this.audioEls.set(track.id, el);
+      const entry = { el, track, streamId, gain: null };
+      this.audioEls.set(track.id, entry);
+      this.session.applyVolume(this, entry);
     }
 
     detachAudio(trackId) {
-      const el = this.audioEls.get(trackId);
-      if (!el) return;
-      el.srcObject = null;
-      el.remove();
+      const e = this.audioEls.get(trackId);
+      if (!e) return;
+      try { e.src?.disconnect(); e.gain?.disconnect(); } catch {}
+      e.el.srcObject = null;
+      e.el.remove();
       this.audioEls.delete(trackId);
     }
 
@@ -154,6 +159,7 @@
     /**
      * @param {{socket:any, myId:string, serverId:string, channelId:string,
      *          muted:boolean, deafened:boolean, getMemberState:(id:string)=>any,
+     *          getVolume:(id:string, kind:'voice'|'stream')=>number,
      *          onChange:()=>void, onSpeaking:(ids:Set<string>)=>void}} opts
      */
     constructor(opts) {
@@ -165,15 +171,53 @@
       this.speaking = new Set();
       this._analysers = new Map();
       this._changeQueued = false;
+      this.getVolume ||= () => 1;
     }
 
     changed() {
       if (this._changeQueued) return;
       this._changeQueued = true;
-      requestAnimationFrame(() => { this._changeQueued = false; this.onChange(); });
+      requestAnimationFrame(() => { this._changeQueued = false; this.applyVolumes(); this.onChange(); });
+    }
+
+    /* ------------------------- volume individual (local) ------------------------- */
+    /** Contexto de áudio de saída — criado no clique de "entrar no canal" (gesto do usuário). */
+    get outCtx() {
+      if (!this._out) { try { this._out = new AudioContext(); } catch { this._out = null; } }
+      if (this._out?.state === 'suspended') this._out.resume().catch(() => {});
+      return this._out;
+    }
+
+    /**
+     * Aplica o volume de UMA trilha remota.
+     *  - 0–100%: volume do próprio <audio> (mantém o cancelamento de eco do navegador intacto).
+     *  - 100–200%: o <audio> fica mudo (mas tocando, exigência do Chrome p/ WebRTC) e o som
+     *    passa por um GainNode do WebAudio, que permite amplificar acima de 100%.
+     */
+    applyVolume(peer, e) {
+      const st = this.getMemberState(peer.id);
+      const kind = st && e.streamId && e.streamId === st.screenStreamId ? 'stream' : 'voice';
+      const v = this.deafened ? 0 : Math.max(0, Math.min(2, this.getVolume(peer.id, kind)));
+      if (v > 1) {
+        const ctx = this.outCtx;
+        if (ctx && !e.gain) {
+          e.src = ctx.createMediaStreamSource(new MediaStream([e.track]));
+          e.gain = ctx.createGain();
+          e.src.connect(e.gain).connect(ctx.destination);
+        }
+        if (e.gain) { e.el.muted = true; e.gain.gain.value = v; return; }
+      }
+      if (e.gain) e.gain.gain.value = 0;
+      e.el.muted = v === 0;
+      e.el.volume = Math.min(1, v);
+    }
+
+    applyVolumes() {
+      for (const p of this.peers.values()) for (const e of p.audioEls.values()) this.applyVolume(p, e);
     }
 
     async start() {
+      void this.outCtx; // desbloqueia o áudio enquanto ainda estamos dentro do gesto do clique
       try {
         this.micStream = await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -243,7 +287,7 @@
 
     setDeafened(deafened) {
       this.deafened = deafened;
-      for (const p of this.peers.values()) for (const el of p.audioEls.values()) el.muted = deafened;
+      this.applyVolumes();
       this.setMuted(this.muted);
     }
 
@@ -367,6 +411,7 @@
       this.peers.clear();
       this.stopLocal();
       this._ctx?.close().catch(() => {});
+      this._out?.close().catch(() => {});
       if (this.socket.connected) this.socket.emit('voice:leave');
     }
   }
