@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0c0c14" />
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; img-src 'self' data: blob: http: https:; media-src 'self' blob: mediastream: http: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src * ws: wss: http: https:;" />
-  <title>Cinecria</title>
+  <title>Cinecria Beta</title>
   <link rel="stylesheet" href="styles.css" />
   <!-- socket.io client: do node_modules (Electron) com fallback para o servidor (modo navegador) -->
   <script src="../node_modules/socket.io-client/dist/socket.io.min.js"></script>
@@ -22,17 +22,20 @@
       <div class="brand">
         <div class="brand-logo" id="brandLogo"></div>
         <div>
-          <h1>Cinecria</h1>
+          <h1><span>Cinecria</span><span class="beta-badge">Beta</span></h1>
           <p>Sua sala de cinema com os amigos.</p>
         </div>
       </div>
 
-      <div class="avatar-pick" id="loginAvatar">
-        <button class="avatar-big" type="button" title="Enviar foto"><img alt="" /><span class="av-edit">Trocar</span></button>
+      <div class="avatar-pick stacked" id="loginAvatar">
+        <button class="avatar-big" type="button" title="Trocar foto"><img alt="" /><span class="av-edit">Trocar</span></button>
         <div class="avatar-side">
-          <span class="label">Foto de perfil</span>
           <div class="presets"></div>
-          <button class="btn ghost sm av-upload" type="button">Enviar foto…</button>
+          <div class="av-actions">
+            <button class="btn ghost sm av-upload" type="button"><span class="av-act-ico" data-ico="folder"></span>Enviar do dispositivo</button>
+            <button class="btn ghost sm av-gif" type="button"><span class="av-act-ico" data-ico="sparkles"></span>Buscar GIF</button>
+          </div>
+          <small class="av-hint">PNG, JPG, WebP ou <b>GIF animado</b> · até 2 MB</small>
           <input type="file" class="av-file" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
         </div>
       </div>
@@ -41,6 +44,12 @@
         <span class="label">Apelido</span>
         <input id="nick" maxlength="32" placeholder="Como seus amigos vão te ver" autocomplete="off" spellcheck="false" />
       </label>
+
+      <div class="srv-lock" id="srvLock">
+        <span class="srv-lock-ico" data-ico="lock"></span>
+        <span class="srv-lock-txt"><small>Servidor oficial</small><code id="srvHost"></code></span>
+        <span class="srv-status" id="srvStatus"><i></i><span>verificando…</span></span>
+      </div>
 
       <details class="adv">
         <summary>Servidor Cinecria</summary>

@@ -8,6 +8,7 @@
  *  - Presença nos canais de voz + estado (mic, câmera, tela ao vivo)
  *  - Relay de sinalização WebRTC (SDP/ICE) entre participantes
  *  - Upload de fotos e vídeos do chat (POST /upload, GET /media/:id)
+ *  - Avatares (inclusive GIF animado) servidos por link: GET /avatar/:key
  *
  * A mídia NÃO passa por aqui: áudio/vídeo/tela trafegam P2P (mesh).
  * Para salas grandes, troque o mesh por um SFU (ver README).
@@ -36,7 +37,62 @@ const MEDIA_TYPES = {
 const app = express();
 // Serve o cliente web (mesma UI do app desktop) — útil para testar em 2 abas do navegador.
 app.use(express.static(path.join(__dirname, '..', 'app', 'renderer')));
+// CORS: o app Electron (file://) e o Android (https://localhost) consultam estas rotas.
+app.use(['/health', '/avatar'], (_req, res, next) => { res.set('Access-Control-Allow-Origin', '*'); next(); });
 app.get('/health', (_req, res) => res.json({ app: 'cinecria-server', ok: true }));
+
+/* ------------------------------ Avatares ------------------------------ */
+// O avatar NÃO vai dentro das atualizações de presença: um GIF de 2 MB repetido a cada
+// "fulano mutou" para cada membro derrubaria a sala. Ele fica aqui e circula como "/avatar/<hash>".
+const MAX_AVATAR_BYTES = 2 * 1024 * 1024;            // arquivo (GIF animado incluso)
+const MAX_AVATAR_DATAURL = 2_900_000;                // base64 de 2 MB ≈ 2,8 milhões de caracteres
+const AVATAR_CACHE_BYTES = (Number(process.env.AVATAR_CACHE_MB) || 200) * 1024 * 1024;
+/** @type {Map<string, { mime: string, buf: Buffer }>} */ const avatars = new Map();
+let avatarBytes = 0;
+const REMOTE_AVATAR_HOST = /^(media\d*\.giphy\.com|i\.giphy\.com|media\d*\.tenor\.com|c\.tenor\.com)$/i;
+
+/** Valida e normaliza o avatar enviado. Retorna o valor a guardar, null (padrão) ou undefined (inválido). */
+function normalizeAvatar(a) {
+  if (a === null) return null;
+  if (typeof a !== 'string') return undefined;
+  const m = /^data:image\/(png|jpeg|jpg|webp|gif);base64,([A-Za-z0-9+/=]+)$/.exec(a);
+  if (m) {
+    if (a.length > MAX_AVATAR_DATAURL) return undefined;
+    const buf = Buffer.from(m[2], 'base64');
+    if (!buf.length || buf.length > MAX_AVATAR_BYTES) return undefined;
+    const mime = 'image/' + (m[1] === 'jpg' ? 'jpeg' : m[1]);
+    const key = crypto.createHash('sha256').update(buf).digest('hex').slice(0, 32);
+    if (avatars.has(key)) avatars.delete(key); // reinsere = "usado recentemente"
+    else avatarBytes += buf.length;
+    avatars.set(key, { mime, buf });
+    for (const [k, v] of avatars) { // cache limitado: sai o mais antigo
+      if (avatarBytes <= AVATAR_CACHE_BYTES) break;
+      if (k === key) continue;
+      avatars.delete(k);
+      avatarBytes -= v.buf.length;
+    }
+    return `/avatar/${key}`;
+  }
+  // GIF escolhido na busca (GIPHY; links antigos do Tenor também): guarda só o link HTTPS
+  if (a.length > 600) return undefined;
+  try {
+    const u = new URL(a);
+    if (u.protocol === 'https:' && REMOTE_AVATAR_HOST.test(u.hostname) && !u.username && !u.password) return u.href;
+  } catch {}
+  return undefined;
+}
+
+app.get('/avatar/:key', (req, res) => {
+  const av = avatars.get(req.params.key);
+  if (!av) return res.status(404).end();
+  res.set({
+    'Content-Type': av.mime,
+    'Cache-Control': 'public, max-age=31536000, immutable', // a chave é o hash do conteúdo
+    'X-Content-Type-Options': 'nosniff',
+    'Content-Security-Policy': "default-src 'none'; sandbox",
+  });
+  res.end(av.buf);
+});
 
 /* ------------------------------ Mídia do chat ------------------------------ */
 // Os arquivos vivem em disco só enquanto o servidor roda (o histórico do chat também é em memória).
@@ -135,7 +191,7 @@ app.get('/media/:id', (req, res) => {
 const httpServer = http.createServer(app);
 const io = new Server(httpServer, {
   cors: { origin: '*' },
-  maxHttpBufferSize: 1e6, // avatares são redimensionados no cliente (~10 KB)
+  maxHttpBufferSize: 3.2e6, // cabe um avatar GIF de 2 MB em base64 + o resto do "hello"
 });
 
 /* ------------------------------ Estado em memória ------------------------------ */
@@ -220,7 +276,6 @@ function findChannel(channelId) {
 
 /* ------------------------------ Validação ------------------------------ */
 const cleanName = (n) => String(n || '').replace(/\s+/g, ' ').trim().slice(0, 32);
-const validAvatar = (a) => typeof a === 'string' && /^data:image\/(png|jpe?g|webp|gif);base64,/.test(a) && a.length < 300_000;
 const ack = (fn) => (typeof fn === 'function' ? fn : () => {});
 
 /* ------------------------------ Socket.io ------------------------------ */
@@ -254,7 +309,7 @@ io.on('connection', (socket) => {
     user = {
       id: socket.id,
       name,
-      avatar: validAvatar(payload.avatar) ? payload.avatar : null,
+      avatar: normalizeAvatar(payload.avatar) ?? null,
       servers: new Set(),
       voice: null,
       state: defaultState(),
@@ -276,7 +331,11 @@ io.on('connection', (socket) => {
     if (!user) return;
     const name = cleanName(payload.name);
     if (name) user.name = name;
-    if (payload.avatar === null || validAvatar(payload.avatar)) user.avatar = payload.avatar;
+    if ('avatar' in payload) {
+      const av = normalizeAvatar(payload.avatar);
+      if (av === undefined) return ack(cb)({ error: 'Foto inválida ou maior que 2 MB.', me: publicUser(user) });
+      user.avatar = av;
+    }
     user.servers.forEach((id) => broadcastServer(servers.get(id)));
     ack(cb)({ me: publicUser(user) });
   });

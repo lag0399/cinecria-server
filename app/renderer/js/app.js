@@ -78,6 +78,10 @@
     volX: '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="m22 9-6 6M16 9l6 6"/>',
     reset: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/>',
     film: '<rect x="2" y="3" width="20" height="18" rx="2"/><path d="M7 3v18M17 3v18M2 8h5M2 13h5M2 18h5M17 8h5M17 13h5M17 18h5"/>',
+    folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+    sparkles: '<path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>',
+    lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+    search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
     eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
     eyeOff: '<path d="M2 12s3.5-7 10-7c2 0 3.8.7 5.2 1.6M22 12s-3.5 7-10 7c-2 0-3.8-.7-5.2-1.6"/><circle cx="12" cy="12" r="3"/><path d="M3 3l18 18" class="slash"/>',
     info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/>',
@@ -97,7 +101,7 @@
 
   // id único por instância: um gradiente definido dentro de um elemento oculto não renderiza nos outros
   let logoSeq = 0;
-  const logo = () => { const id = 'cineGrad' + ++logoSeq; return `<svg viewBox="0 0 48 48" class="logo" aria-hidden="true"><defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffb23f"/><stop offset=".55" stop-color="#ff5a5f"/><stop offset="1" stop-color="#ff3d7f"/></linearGradient></defs><rect width="48" height="48" rx="13" fill="url(#${id})"/><rect x="10.5" y="13.5" width="27" height="18" rx="3.5" fill="none" stroke="#14070c" stroke-width="2.8"/><path d="M21 18.4v8.2l7-4.1z" fill="#14070c"/><path d="M17 36.5h14" stroke="#14070c" stroke-width="2.8" stroke-linecap="round"/></svg>`; };
+  const logo = () => { const id = 'cineGrad' + ++logoSeq; return `<svg viewBox="0 0 48 48" class="logo" aria-hidden="true"><defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3b82f6"/><stop offset=".55" stop-color="#2563eb"/><stop offset="1" stop-color="#0ea5e9"/></linearGradient></defs><rect width="48" height="48" rx="13" fill="url(#${id})"/><rect x="10.5" y="13.5" width="27" height="18" rx="3.5" fill="none" stroke="#fff" stroke-width="2.8"/><path d="M21 18.4v8.2l7-4.1z" fill="#fff"/><path d="M17 36.5h14" stroke="#fff" stroke-width="2.8" stroke-linecap="round"/></svg>`; };
 
   /* ================================ avatares =============================== */
   const PRESET_HUES = [[262, 300], [340, 15], [150, 190], [28, 52], [200, 240], [300, 330], [170, 130], [8, 40]];
@@ -122,10 +126,55 @@
     avatarCache.set(key, url);
     return url;
   }
-  const avatarSrc = (u) => u.avatar || genAvatar(initials(u.name)[0], hue(u.name), (hue(u.name) + 40) % 360);
-  const avatar = (u, size = 'sm') => `<img class="av av-${size}" src="${esc(avatarSrc(u))}" alt="" draggable="false">`;
+  const fallbackAvatar = (name) => genAvatar(initials(name)[0], hue(name), (hue(name) + 40) % 360);
+  /** O servidor devolve "/avatar/<hash>" (foto/GIF guardado nele) ou um link HTTPS do GIPHY. */
+  const avatarSrc = (u) => {
+    const a = u?.avatar;
+    if (a && a[0] === '/') return profile.serverUrl + a;
+    return a || fallbackAvatar(u?.name || '?');
+  };
+  const avatar = (u, size = 'sm') => `<img class="av av-${size}" src="${esc(avatarSrc(u))}" data-n="${esc(u.name)}" alt="" draggable="false">`;
+  // Foto que não carrega (servidor reiniciou, GIF removido): volta para o avatar com a inicial.
+  document.addEventListener('error', (e) => {
+    const img = e.target;
+    if (!(img instanceof HTMLImageElement) || !img.dataset.n || img.dataset.fb) return;
+    img.dataset.fb = '1';
+    img.src = fallbackAvatar(img.dataset.n);
+  }, true);
 
-  function resizeImage(file, size = 128) {
+  /* Armazenamento local da foto enviada: um GIF de 2 MB não cabe no localStorage. */
+  const IDB = (() => {
+    let dbp;
+    const open = () => (dbp ||= new Promise((res, rej) => {
+      const r = indexedDB.open('cinecria', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('kv');
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    }));
+    const run = async (mode, fn) => {
+      const db = await open();
+      return new Promise((res, rej) => {
+        const t = db.transaction('kv', mode);
+        const r = fn(t.objectStore('kv'));
+        t.oncomplete = () => res(r?.result);
+        t.onerror = () => rej(t.error);
+      });
+    };
+    return {
+      get: (k) => run('readonly', (st) => st.get(k)).catch(() => null),
+      set: (k, v) => run('readwrite', (st) => st.put(v, k)).catch(() => {}),
+    };
+  })();
+
+  /** GIF: lido como está (o canvas congelaria a animação). */
+  const readRaw = (file) => new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result);
+    fr.onerror = () => reject(fr.error);
+    fr.readAsDataURL(file);
+  });
+
+  function resizeImage(file, size = 256) {
     return new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => {
@@ -134,24 +183,30 @@
         const s = Math.min(img.width, img.height);
         c.getContext('2d').drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size);
         URL.revokeObjectURL(img.src);
-        resolve(c.toDataURL('image/jpeg', 0.88));
+        // WebP mantém a transparência de PNGs (JPEG deixaria o fundo preto)
+        const webp = c.toDataURL('image/webp', 0.9);
+        resolve(webp.startsWith('data:image/webp') ? webp : c.toDataURL('image/jpeg', 0.88));
       };
       img.onerror = reject;
       img.src = URL.createObjectURL(file);
     });
   }
 
-  /** Seletor de avatar reutilizável (tela de entrada e configurações). */
+  /** Seletor de avatar reutilizável (tela de entrada e "Meu perfil"). */
   function setupAvatarPicker(root, nameInput, init = {}) {
-    const st = { mode: init.mode === 'upload' && init.upload ? 'upload' : 'preset', preset: init.preset || 0, upload: init.upload || null };
+    const st = { mode: init.mode || 'preset', preset: init.preset || 0, upload: init.upload || null, remote: init.remote || null };
+    if ((st.mode === 'upload' && !st.upload) || (st.mode === 'remote' && !st.remote)) st.mode = 'preset';
     const letter = () => initials(nameInput.value.trim() || '?')[0];
     const presetSrc = (i) => genAvatar(letter(), ...PRESET_HUES[i]);
-    const value = () => (st.mode === 'upload' && st.upload ? st.upload : presetSrc(st.preset));
+    const value = () => (st.mode === 'upload' ? st.upload : st.mode === 'remote' ? st.remote : presetSrc(st.preset));
     const fileInput = $('.av-file', root);
+    $$('[data-ico]', root).forEach((el) => { el.innerHTML = icon(el.dataset.ico); });
     function render() {
       $('.presets', root).innerHTML = PRESET_HUES.map((_, i) =>
-        `<button type="button" class="preset ${st.mode === 'preset' && st.preset === i ? 'sel' : ''}" data-i="${i}"><img src="${presetSrc(i)}" alt=""></button>`).join('');
-      $('.avatar-big img', root).src = value();
+        `<button type="button" class="preset ${st.mode === 'preset' && st.preset === i ? 'sel' : ''}" data-i="${i}" title="Avatar com a inicial"><img src="${presetSrc(i)}" alt=""></button>`).join('');
+      const img = $('.avatar-big img', root);
+      img.src = value();
+      root.classList.toggle('is-gif', st.mode === 'remote' || /^data:image\/gif/.test(st.upload || '') && st.mode === 'upload');
     }
     $('.presets', root).addEventListener('click', (e) => {
       const b = e.target.closest('.preset');
@@ -161,15 +216,121 @@
     const pick = () => fileInput.click();
     $('.av-upload', root).addEventListener('click', pick);
     $('.avatar-big', root).addEventListener('click', pick);
+    $('.av-gif', root).addEventListener('click', () => openGifPicker((url) => { st.remote = url; st.mode = 'remote'; render(); }));
     fileInput.addEventListener('change', async () => {
       const f = fileInput.files[0];
       fileInput.value = '';
       if (!f) return;
-      try { st.upload = await resizeImage(f); st.mode = 'upload'; render(); } catch { toast('Não consegui ler essa imagem.', 'err'); }
+      const max = CFG.maxAvatarMB * 1048576;
+      try {
+        if (f.type === 'image/gif') {
+          if (f.size > max) return toast(`Esse GIF tem ${(f.size / 1048576).toFixed(1).replace('.', ',')} MB — o máximo é ${CFG.maxAvatarMB} MB.`, 'err');
+          st.upload = await readRaw(f); // animação preservada
+        } else {
+          if (!/^image\/(png|jpeg|webp)$/.test(f.type)) return toast('Use PNG, JPG, WebP ou GIF.', 'err');
+          st.upload = await resizeImage(f);
+        }
+        st.mode = 'upload';
+        render();
+      } catch { toast('Não consegui ler essa imagem.', 'err'); }
     });
     nameInput.addEventListener('input', () => st.mode === 'preset' && render());
     render();
     return { value, state: () => ({ ...st }) };
+  }
+
+  /** Salva a escolha de foto: dados leves no localStorage, o arquivo no IndexedDB. */
+  function saveProfile() {
+    const { upload, ...light } = profile;
+    LS.set('profile', light);
+    IDB.set('avatarUpload', upload || null);
+  }
+
+  /* ============================== busca de GIFs ============================== */
+  // Tenor: API desligada pelo Google em 30/06/2026. GIPHY: chave em config.js (gifApiKey).
+  function gifFromLink(raw) {
+    try {
+      const u = new URL(String(raw).trim());
+      if (u.protocol !== 'https:') return null;
+      const h = u.hostname.toLowerCase();
+      let m;
+      if (/^(media\d*|i)\.giphy\.com$/.test(h)) {
+        m = u.pathname.match(/\/media\/(?:v1\.[^/]+\/)?([A-Za-z0-9]+)\//);
+        return m ? `https://media.giphy.com/media/${m[1]}/200w.gif` : null;
+      }
+      if (/(^|\.)giphy\.com$/.test(h)) {
+        m = u.pathname.match(/\/(?:gifs|stickers|embed)\/(?:[\w-]*-)?([A-Za-z0-9]+)\/?$/);
+        return m ? `https://media.giphy.com/media/${m[1]}/200w.gif` : null;
+      }
+      if (/^(media\d*\.tenor\.com|c\.tenor\.com)$/.test(h) && /\.gif$/i.test(u.pathname)) return u.href;
+    } catch {}
+    return null;
+  }
+  function closeGifPicker() { const g = $('.gif-back'); if (!g) return false; g.remove(); return true; }
+  function openGifPicker(onPick) {
+    closeGifPicker();
+    const key = CFG.gifApiKey;
+    const ov = document.createElement('div');
+    ov.className = 'gif-back';
+    ov.innerHTML = `
+      <div class="gif-pop" role="dialog" aria-label="Buscar GIF">
+        <div class="gif-head"><b>${icon('sparkles')}Buscar GIF</b><button type="button" class="icon-btn" data-g="x" title="Fechar">${icon('x')}</button></div>
+        <label class="gif-search">${icon('search')}<input type="search" placeholder="${key ? 'Pesquisar GIFs… (ex.: gato, anime, cinema)' : 'Busca desativada (sem chave do GIPHY)'}" ${key ? '' : 'disabled'} autocomplete="off" spellcheck="false"></label>
+        <div class="gif-grid"></div>
+        <form class="gif-link"><input placeholder="…ou cole o link de um GIF do GIPHY" spellcheck="false" autocomplete="off"><button type="submit" class="btn ghost sm">Usar</button></form>
+        <div class="gif-foot"><span>Clique num GIF para usar como foto</span><span class="giphy-attr">Powered by <b>GIPHY</b></span></div>
+      </div>`;
+    document.body.appendChild(ov);
+    const grid = $('.gif-grid', ov), input = $('.gif-search input', ov);
+    const choose = (url) => {
+      // confere se o GIF existe antes de aplicar
+      const test = new Image();
+      test.onload = () => { onPick(url); closeGifPicker(); };
+      test.onerror = () => toast('Não consegui carregar esse GIF.', 'err');
+      test.src = url;
+    };
+    ov.addEventListener('mousedown', (e) => { if (e.target === ov) closeGifPicker(); });
+    ov.addEventListener('click', (e) => {
+      if (e.target.closest('[data-g=x]')) return closeGifPicker();
+      const g = e.target.closest('[data-gif]');
+      if (g) choose(g.dataset.gif);
+    });
+    $('.gif-link', ov).addEventListener('submit', (e) => {
+      e.preventDefault();
+      const url = gifFromLink($('.gif-link input', ov).value);
+      if (!url) return toast('Cole um link do GIPHY (giphy.com/gifs/…) ou de um arquivo .gif dele.', 'err');
+      choose(url);
+    });
+    const msg = (html) => { grid.innerHTML = `<div class="gif-msg">${html}</div>`; };
+    if (!key) {
+      msg(`${icon('info')}<span>A busca precisa de uma chave grátis do GIPHY em <code>config.js</code> (<code>gifApiKey</code>). A API do Tenor foi desligada pelo Google em 30/06/2026.<br>Enquanto isso, cole abaixo o link de um GIF do <b>giphy.com</b>.</span>`);
+      setTimeout(() => $('.gif-link input', ov).focus(), 30);
+      return;
+    }
+    let seq = 0, timer = null;
+    async function load(q) {
+      const my = ++seq;
+      grid.classList.add('loading');
+      const params = new URLSearchParams({ api_key: key, limit: '24', rating: CFG.gifRating || 'pg-13' });
+      if (q) { params.set('q', q.slice(0, 50)); params.set('lang', 'pt'); }
+      try {
+        const r = await fetch(`https://api.giphy.com/v1/gifs/${q ? 'search' : 'trending'}?${params}`);
+        if (my !== seq) return;
+        if (r.status === 429) return msg('Limite de buscas da chave do GIPHY atingido (chave beta: 100 por hora). Tente mais tarde ou cole um link abaixo.');
+        if (!r.ok) return msg(`O GIPHY recusou a busca (${r.status}). Confira a chave em <code>config.js</code>.`);
+        const { data = [] } = await r.json();
+        if (!data.length) return msg('Nenhum GIF encontrado.');
+        grid.innerHTML = data.map((g) => {
+          const prev = g.images?.fixed_width_small?.url || g.images?.fixed_width?.url;
+          const use = g.images?.fixed_width?.url || prev; // 200 px: nítido como avatar, leve para quem vê
+          return prev && use ? `<button type="button" class="gif-item" data-gif="${esc(use)}" title="${esc(g.title || '')}"><img src="${esc(prev)}" alt="" loading="lazy"></button>` : '';
+        }).join('');
+      } catch { if (my === seq) msg('Sem conexão com o GIPHY.'); }
+      finally { if (my === seq) grid.classList.remove('loading'); }
+    }
+    input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => load(input.value.trim()), 450); });
+    load('');
+    setTimeout(() => input.focus(), 30);
   }
 
   /* ================================= estado ================================ */
@@ -290,15 +451,27 @@
   const sfx = { join: () => blip(520, 880), leave: () => blip(700, 380), live: () => { blip(660, 990, 0.1); setTimeout(() => blip(880, 1320, 0.1), 110); } };
 
   /* ================================= entrada =============================== */
-  const profile = LS.get('profile', { name: '', mode: 'preset', preset: Math.floor(Math.random() * 8), upload: null, serverUrl: '' });
+  const profile = LS.get('profile', { name: '', mode: 'preset', preset: Math.floor(Math.random() * 8), serverUrl: '' });
+  // Servidor travado: ignora qualquer endereço antigo salvo no aparelho.
+  if (CFG.lockServer) profile.serverUrl = CFG.serverUrl;
   let loginPicker;
 
-  function initLogin() {
+  async function initLogin() {
     $('#brandLogo').innerHTML = logo();
+    $$('#login [data-ico]').forEach((el) => { el.innerHTML = icon(el.dataset.ico); });
+    // foto enviada fica no IndexedDB (versões antigas guardavam no localStorage: migra)
+    if (profile.upload) { await IDB.set('avatarUpload', profile.upload); saveProfile(); }
+    profile.upload = await IDB.get('avatarUpload');
     const nick = $('#nick');
     nick.value = profile.name || '';
     $('#srvUrl').value = profile.serverUrl || CFG.defaultServerUrl;
-    if (IS_NATIVE) {
+    $('#srvLock').classList.toggle('hidden', !CFG.lockServer);
+    $('.adv').classList.toggle('hidden', !!CFG.lockServer);
+    if (CFG.lockServer) {
+      $('#srvHost').textContent = new URL(CFG.serverUrl).host;
+      checkServer();
+    }
+    if (IS_NATIVE && !CFG.lockServer) {
       $('.adv').open = true; // no celular o IP do PC é obrigatório — campo sempre visível
       $('#srvEmu').addEventListener('click', () => { $('#srvUrl').value = `http://10.0.2.2:${CFG.defaultPort}`; testServer(); });
     }
@@ -347,16 +520,38 @@
     }
   }
 
+  /** Indicador "online / acordando" do servidor oficial. O Render gratuito dorme sem uso. */
+  let srvTimer = null;
+  async function checkServer(tries = 0) {
+    clearTimeout(srvTimer);
+    const box = $('#srvStatus');
+    if (!box || $('#login').classList.contains('hidden')) return;
+    const set = (cls, txt) => { box.className = 'srv-status ' + cls; $('span', box).textContent = txt; };
+    if (!tries) set('', 'verificando…');
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8000);
+      const r = await fetch(CFG.serverUrl + '/health', { signal: ctrl.signal, cache: 'no-store' });
+      clearTimeout(t);
+      if (!(await r.json()).ok) throw new Error();
+      set('ok', 'online');
+    } catch {
+      if (tries >= 15) return set('err', 'fora do ar');
+      set('wake', 'acordando…');
+      srvTimer = setTimeout(() => checkServer(tries + 1), 5000);
+    }
+  }
+
   function enter() {
     const name = $('#nick').value.trim();
     const err = $('#loginErr');
     if (!name) { err.textContent = 'Escolha um apelido para entrar.'; $('#nick').focus(); return; }
-    const serverUrl = normalizeUrl($('#srvUrl').value) || CFG.defaultServerUrl;
+    const serverUrl = CFG.lockServer ? CFG.serverUrl : normalizeUrl($('#srvUrl').value) || CFG.defaultServerUrl;
     if (IS_NATIVE && /\/\/(localhost|127\.0\.0\.1)\b/.test(serverUrl)) { testServer(); return; }
     if (!serverUrl) { err.textContent = 'Informe o endereço do servidor Cinecria (IP do PC).'; $('.adv').open = true; $('#srvUrl').focus(); return; }
     $('#srvUrl').value = serverUrl;
     Object.assign(profile, loginPicker.state(), { name, serverUrl });
-    LS.set('profile', profile);
+    saveProfile();
     err.textContent = '';
     $('#enterBtn').disabled = true;
     $('#enterBtn').textContent = 'Conectando…';
@@ -368,7 +563,9 @@
     $('#login').classList.remove('hidden');
     $('#enterBtn').disabled = false;
     $('#enterBtn').textContent = 'Entrar';
+    $('#loginErr').className = 'err';
     $('#loginErr').textContent = msg;
+    if (CFG.lockServer) checkServer();
   }
 
   /* ================================= conexão =============================== */
@@ -385,8 +582,19 @@
       if (res.error) { socket.disconnect(); return showLogin(res.error); }
       onInit(res);
     });
+    // Render gratuito: o primeiro acesso depois de um tempo parado leva ~1 min. O socket.io
+    // continua tentando sozinho; só desistimos depois de 90 s.
+    const t0 = Date.now();
     socket.on('connect_error', () => {
-      if (!S.me) { socket.disconnect(); showLogin(`Não foi possível conectar a ${profile.serverUrl}`); }
+      if (S.me) return;
+      if (Date.now() - t0 < 90_000) {
+        $('#enterBtn').textContent = 'Acordando o servidor…';
+        $('#loginErr').className = 'err info';
+        $('#loginErr').textContent = 'O servidor gratuito dorme quando ninguém usa. A primeira entrada pode levar até 1 minuto.';
+        return;
+      }
+      socket.disconnect();
+      showLogin('Não foi possível conectar ao servidor. Tente de novo em instantes.');
     });
     socket.on('disconnect', (reason) => {
       if (reason === 'io client disconnect') return;
@@ -408,6 +616,8 @@
     const last = LS.get('lastServer');
     S.activeServerId = S.servers.has(S.activeServerId) ? S.activeServerId : S.servers.has(last) ? last : servers[0]?.id;
     S.view = 'text';
+    clearTimeout(srvTimer);
+    $('#loginErr').textContent = '';
     $('#login').classList.add('hidden');
     $('#app').classList.remove('hidden');
     renderAll();
@@ -476,7 +686,7 @@
   function renderRail() {
     const serverUnread = (s) => s.channels.some((c) => S.unread.has(c.id));
     $('#rail').innerHTML = `
-      <div class="rail-logo" title="Cinecria">${logo()}</div>
+      <div class="rail-logo" title="Cinecria Beta">${logo()}<span class="beta-badge mini">Beta</span></div>
       <div class="rail-sep"></div>
       ${[...S.servers.values()].map((s) => `
         <button class="rail-item ${s.id === S.activeServerId ? 'active' : ''} ${serverUnread(s) ? 'unread' : ''}" data-server="${s.id}" style="--c:${s.color}" data-tip="${esc(s.name)}">
@@ -795,7 +1005,7 @@
     el.classList.toggle('in-pip', S.pip?.key === t.key);
     el.style.setProperty('--tile-c', tileColor(m.name));
     const img = $('.tile-av img', el), src = avatarSrc(m);
-    if (img.getAttribute('src') !== src) img.src = src;
+    if (img._want !== src) { img._want = src; img.dataset.n = m.name; delete img.dataset.fb; img.src = src; }
 
     setHTML($('.tile-top', el), t.kind === 'screen'
       ? `<span class="live-pill">AO VIVO</span>${st.quality ? `<span class="q-pill">${esc(st.quality)}</span>` : ''}` : '');
@@ -1024,7 +1234,7 @@
   async function openScreenPicker() {
     const isEl = !!window.cinecria?.isElectron;
     const canAudio = isEl ? window.cinecria.platform === 'win32' : true;
-    const presetKey = LS.get('screenPreset', CFG.defaultScreenPreset);
+    const presetKey = CFG.defaultScreenPreset; // sempre abre na recomendada (Nativa 60 FPS)
     const hint = LS.get('screenHint', 'motion');
     const wantAudio = LS.get('screenAudio', true) && canAudio;
     const viewers = Math.max(1, S.voice.peers.size);
@@ -1037,7 +1247,8 @@
       : '<p class="hint">Ao clicar em <b>Entrar ao vivo</b>, o navegador abre o seletor de tela do sistema.</p>'}
       <div class="share-opts">
         <label class="field"><span class="label">Qualidade</span>
-          <select id="shQ">${Object.entries(CFG.screenPresets).map(([k, p]) => `<option value="${k}" ${k === presetKey ? 'selected' : ''}>${p.label}</option>`).join('')}</select></label>
+          <select id="shQ">${Object.entries(CFG.screenPresets).map(([k, p]) => `<option value="${k}" ${k === presetKey ? 'selected' : ''}>${p.label}</option>`).join('')}</select>
+          <small class="rec-hint" id="shRec"><span class="rec-badge">★ Recomendado</span>resolução original da sua tela a 60 FPS: a melhor nitidez e fluidez</small></label>
         <label class="field"><span class="label">Otimizar para</span>
           <select id="shHint">
             <option value="motion" ${hint === 'motion' ? 'selected' : ''}>Fluidez — filmes, séries e jogos</option>
@@ -1059,8 +1270,9 @@
         + `Upload estimado: até ~${Math.round((p.bitrate * viewers) / 1e6)} Mbps para ${viewers} espectador${viewers > 1 ? 'es' : ''}`;
       $('#shNote', modal).classList.toggle('warn', S.gpuDisabled);
     };
-    $('#shQ', modal).addEventListener('change', note);
-    note();
+    const rec = () => $('#shRec', modal).classList.toggle('hidden', $('#shQ', modal).value !== CFG.recommendedScreenPreset);
+    $('#shQ', modal).addEventListener('change', () => { note(); rec(); });
+    note(); rec();
     wireDrmGuide(modal, isEl);
 
     let chosen = null;
@@ -1185,25 +1397,34 @@
     const m = openModal(`
       <div class="modal-head"><h2>Meu perfil</h2><button class="icon-btn" data-close>${icon('x')}</button></div>
       <div class="avatar-pick" id="pfAvatar">
-        <button class="avatar-big" type="button" title="Enviar foto"><img alt=""><span class="av-edit">Trocar</span></button>
+        <button class="avatar-big" type="button" title="Trocar foto"><img alt=""><span class="av-edit">Trocar</span></button>
         <div class="avatar-side">
           <span class="label">Foto de perfil</span>
           <div class="presets"></div>
-          <button class="btn ghost sm av-upload" type="button">Enviar foto…</button>
+          <div class="av-actions">
+            <button class="btn ghost sm av-upload" type="button">${icon('folder')}Enviar do dispositivo</button>
+            <button class="btn ghost sm av-gif" type="button">${icon('sparkles')}Buscar GIF</button>
+          </div>
+          <small class="av-hint">PNG, JPG, WebP ou <b>GIF animado</b> · até 2 MB</small>
           <input type="file" class="av-file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
         </div>
       </div>
       <label class="field"><span class="label">Apelido</span><input id="pfName" maxlength="32" value="${esc(S.me.name)}"></label>
-      <p class="hint">Conectado a <b>${esc(profile.serverUrl)}</b></p>
+      <p class="hint srv-line">${icon('lock')}Conectado a <b>${esc(new URL(profile.serverUrl).host)}</b></p>
       <div class="modal-foot"><button class="btn danger-ghost" id="pfOut">${icon('logout')}Sair</button><div class="spacer"></div><button class="btn ghost" data-close>Cancelar</button><button class="btn primary" id="pfSave">Salvar</button></div>`);
     const picker = setupAvatarPicker($('#pfAvatar', m), $('#pfName', m), profile);
     $('#pfSave', m).addEventListener('click', async () => {
       const name = $('#pfName', m).value.trim();
       if (!name) return toast('O apelido não pode ficar vazio.', 'err');
+      const btn = $('#pfSave', m);
+      btn.disabled = true; btn.textContent = 'Salvando…';
+      const avatar = picker.value();
+      const res = await req('profile:update', { name, avatar });
+      btn.disabled = false; btn.textContent = 'Salvar';
+      if (res.error) return toast(res.error, 'err');
       Object.assign(profile, picker.state(), { name });
-      LS.set('profile', profile);
-      S.avatarData = picker.value();
-      const res = await req('profile:update', { name, avatar: S.avatarData });
+      saveProfile();
+      S.avatarData = avatar;
       if (res.me) S.me = { ...S.me, ...res.me };
       closeModal();
       renderUserPanel();
@@ -1684,7 +1905,7 @@
     document.body.appendChild(l);
   }
 
-  const closePopovers = () => closeMentions() || closeVolMenu() || closeEmoji() || closeLightbox();
+  const closePopovers = () => closeGifPicker() || closeMentions() || closeVolMenu() || closeEmoji() || closeLightbox();
 
   /* ================================ menções ================================ */
   // "@Bia Ramos" — nomes podem ter espaços, então a menção é reconhecida contra a lista de nomes conhecidos.

@@ -1,6 +1,6 @@
 {
   "name": "cinecria-mobile",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Cinecria para Android — mesma UI e mesmo WebRTC do desktop, empacotados com Capacitor.",
   "private": true,
   "scripts": {
