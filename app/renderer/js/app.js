@@ -18,12 +18,14 @@
   document.documentElement.classList.toggle('native', IS_NATIVE);
   document.documentElement.classList.toggle('touch', IS_TOUCH);
   document.documentElement.classList.toggle('no-share', !CAN_SHARE);
+  // Picture-in-Picture: só no PC (mouse) e onde o navegador/Electron suporta.
+  const CAN_PIP = !!document.pictureInPictureEnabled && !IS_TOUCH && !IS_NATIVE && !/Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  document.documentElement.classList.toggle('pip', CAN_PIP);
 
   /* =============================== utilidades =============================== */
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const linkify = (t) => esc(t).replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
   const LS = {
     get(k, d) { try { const v = localStorage.getItem('cinecria.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
     set(k, v) { try { localStorage.setItem('cinecria.' + k, JSON.stringify(v)); } catch {} },
@@ -76,6 +78,10 @@
     volX: '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="m22 9-6 6M16 9l6 6"/>',
     reset: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/>',
     film: '<rect x="2" y="3" width="20" height="18" rx="2"/><path d="M7 3v18M17 3v18M2 8h5M2 13h5M2 18h5M17 8h5M17 13h5M17 18h5"/>',
+    pip: '<rect x="2" y="4" width="20" height="16" rx="2"/><rect x="12" y="11" width="7" height="6" rx="1" fill="currentColor" stroke="none"/>',
+    alert: '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>',
+    at: '<circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/>',
     external: '<path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
     chat: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
     trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>',
@@ -188,6 +194,8 @@
     token: null,                         // autoriza uploads de mídia (só este cliente conhece)
     volumes: LS.get('volumes', {}),      // { [nome]: { voice, stream, muted } } — volume LOCAL por pessoa
     staged: [],                          // anexos aguardando envio no chat
+    mentions: new Set(),                 // canais com menção não lida a você
+    pip: null,                           // { key } do vídeo em Picture-in-Picture
   };
 
   const req = (ev, data) => new Promise((res) =>
@@ -406,6 +414,16 @@
   }
 
   function onChatMessage(msg) {
+    const pingMe = msg.author.id !== S.me.id && mentionsMe(msg.text);
+    const viewing = S.view === 'text' && textChannel(activeServer())?.id === msg.channelId;
+    if (pingMe) {
+      mentionDing();
+      if (!viewing || document.hidden) {
+        S.mentions.add(msg.channelId);
+        const ch = channelById(msg.channelId);
+        if (!viewing) toast(`${msg.author.name} mencionou você${ch ? ` em #${ch.name}` : ''}`, 'ping');
+      }
+    }
     if (!S.loaded.has(msg.channelId)) {
       if (msg.author.id !== S.me.id) S.unread.add(msg.channelId);
       renderRail(); renderSidebar();
@@ -440,6 +458,7 @@
           <span class="pill"></span>
           <span class="srv-ico">${esc(initials(s.name))}</span>
           ${S.voice?.serverId === s.id ? `<span class="rail-voice">${icon('volume')}</span>` : ''}
+          ${s.channels.some((c) => S.mentions.has(c.id)) ? '<span class="rail-ping">@</span>' : ''}
         </button>`).join('')}
       <div class="rail-sep"></div>
       <button class="rail-item add" data-action="create-server" data-tip="Criar servidor">${icon('plus')}</button>
@@ -467,7 +486,7 @@
     const cat = (label, type) => `<div class="cat"><span>${label}</span><button class="cat-add" data-action="create-channel" data-type="${type}" title="Criar canal">${icon('plus')}</button></div>`;
     const text = srv.channels.filter((c) => c.type === 'text').map((c) => `
       <button class="ch ${S.view === 'text' && cur?.id === c.id ? 'active' : ''} ${S.unread.has(c.id) ? 'unread' : ''}" data-channel="${c.id}" data-type="text">
-        ${icon('hash')}<span class="ch-name">${esc(c.name)}</span></button>`).join('');
+        ${icon('hash')}<span class="ch-name">${esc(c.name)}</span>${S.mentions.has(c.id) ? `<span class="ping" title="Mencionaram você">${icon('at')}</span>` : ''}</button>`).join('');
     const voice = srv.channels.filter((c) => c.type === 'voice').map((c) => {
       const ms = srv.members.filter((m) => m.voice?.channelId === c.id);
       const connected = S.voice?.channelId === c.id;
@@ -542,6 +561,7 @@
     if (!ch) { resetStage(); main.dataset.view = ''; main.innerHTML = '<div class="empty">Nenhum canal de texto.</div>'; return; }
     if (main.dataset.view !== 'text:' + ch.id) buildText(ch);
     S.unread.delete(ch.id);
+    if (S.mentions.delete(ch.id)) { renderRail(); renderSidebar(); }
     renderMessages(ch.id);
     loadHistory(ch.id);
   }
@@ -593,7 +613,8 @@
         </div>
       </div>`;
     let prev = null;
-    for (const m of list) { html += messageHTML(m, prev); prev = m; }
+    const names = knownNames(channelId);
+    for (const m of list) { html += messageHTML(m, prev, names); prev = m; }
     box.innerHTML = html;
     if (atBottom || list.at(-1)?.author.id === S.me.id) box.scrollTop = box.scrollHeight;
     if (!box._wired) {
@@ -612,7 +633,7 @@
     if (!box) return;
     const list = S.messages.get(msg.channelId) || [];
     const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
-    box.insertAdjacentHTML('beforeend', messageHTML(msg, list[list.length - 2]));
+    box.insertAdjacentHTML('beforeend', messageHTML(msg, list[list.length - 2], knownNames(msg.channelId)));
     if (atBottom || msg.author.id === S.me.id) box.scrollTop = box.scrollHeight;
   }
 
@@ -660,8 +681,11 @@
       <div class="tile-wait">Conectando à transmissão…</div>
       <div class="tile-top"></div>
       <div class="tile-name"></div>
+      ${CAN_PIP ? `<button class="tile-pip" title="Janela flutuante (Picture-in-Picture)">${icon('pip')}</button>` : ''}
+      <div class="tile-pipped">${icon('pip')}<span>Em janela flutuante</span></div>
       <button class="tile-fs" title="Tela cheia">${icon('maximize')}</button>`;
     el.addEventListener('click', (e) => {
+      if (e.target.closest('.tile-pip')) return togglePip(t.key);
       if (e.target.closest('.tile-fs')) return toggleFullscreen(el);
       if (el.classList.contains('pseudo-fs')) return;
       // celular: tocar no perfil de alguém abre o volume individual
@@ -692,6 +716,7 @@
     el.classList.toggle('speaking', t.kind === 'user' && S.speaking.has(m.id));
     if (t.kind === 'user') el.dataset.user = m.id;
     el.dataset.volUser = m.id;
+    el.classList.toggle('in-pip', S.pip?.key === t.key);
     el.style.setProperty('--tile-c', tileColor(m.name));
     const img = $('.tile-av img', el), src = avatarSrc(m);
     if (img.getAttribute('src') !== src) img.src = src;
@@ -735,6 +760,7 @@
       const el = S.tileEls.get(t.key);
       if (box.children[i] !== el) box.insertBefore(el, box.children[i] || null);
     });
+    syncPip();
     for (const [k, el] of S.tileEls) if (!keep.has(k)) {
       if (el.classList.contains('pseudo-fs')) exitPseudoFs(); // transmissão acabou durante a tela cheia
       el.remove(); S.tileEls.delete(k);
@@ -860,6 +886,7 @@
   function teardownVoice(render = true) {
     if (!S.voice) return;
     exitPseudoFs();
+    exitPip();
     keepAwake(false);
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     S.voice.leave();
@@ -928,6 +955,7 @@
         <label class="check ${canAudio ? '' : 'disabled'}"><input type="checkbox" id="shAudio" ${wantAudio ? 'checked' : ''} ${canAudio ? '' : 'disabled'}>
           <span>Transmitir áudio do sistema${canAudio ? '' : ' (somente Windows)'}</span></label>
       </div>
+      ${drmGuideHTML(isEl)}
       <div class="modal-foot">
         <span class="foot-note" id="shNote"></span>
         <button class="btn ghost" data-close>Cancelar</button>
@@ -940,6 +968,7 @@
     };
     $('#shQ', modal).addEventListener('change', note);
     note();
+    wireDrmGuide(modal, isEl);
 
     let chosen = null;
     if (isEl) {
@@ -965,6 +994,11 @@
         chosen = b.dataset.id;
         $('#goLive', modal).disabled = false;
         draw();
+        // janela de navegador ou de streaming → o guia se abre sozinho
+        const src = sources.find((x) => x.id === chosen);
+        const risky = src && STREAMING_RE.test(src.name);
+        $('#drmBox', modal).classList.toggle('flag', !!risky);
+        if (risky) $('#drmBox', modal).open = true;
       });
       grid.addEventListener('dblclick', (e) => e.target.closest('.src') && $('#goLive', modal).click());
       try { sources = await window.cinecria.getSources(); draw(); } catch { grid.innerHTML = '<div class="loading">Não foi possível listar as telas.</div>'; }
@@ -1352,13 +1386,14 @@
       <div class="att-meta">${icon('film')}<span>${esc(a.name)}</span><small>${fmtSize(a.size)}</small></div>`;
   }
 
-  function messageHTML(m, prev) {
+  function messageHTML(m, prev, names = []) {
     const grouped = prev && prev.author.id === m.author.id && m.ts - prev.ts < 5 * 60e3;
     const time = new Date(m.ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-    const body = (m.text ? `<div class="body ${isJumbo(m.text) ? 'jumbo' : ''}">${linkify(m.text)}</div>` : '')
+    const body = (m.text ? `<div class="body ${isJumbo(m.text) ? 'jumbo' : ''}">${richText(m.text, names)}</div>` : '')
       + (m.attachment ? attachmentHTML(m.attachment) : '');
-    if (grouped) return `<div class="msg cont"><span class="ts-side">${time}</span><div class="msg-main">${body}</div></div>`;
-    return `<div class="msg">${avatar(m.author, 'md')}<div class="msg-main">
+    const ping = m.author.id !== S.me?.id && mentionsMe(m.text) ? ' mentioned' : '';
+    if (grouped) return `<div class="msg cont${ping}"><span class="ts-side">${time}</span><div class="msg-main">${body}</div></div>`;
+    return `<div class="msg${ping}">${avatar(m.author, 'md')}<div class="msg-main">
       <div class="meta"><b style="color:${nameColor(m.author.name)}">${esc(m.author.name)}</b><span class="ts">${fmtTime(m.ts)}</span></div>
       ${body}</div></div>`;
   }
@@ -1479,6 +1514,7 @@
       const files = [...(e.clipboardData?.files || [])];
       if (files.length) { e.preventDefault(); addFiles(files); }
     });
+    wireMentions($('#msgInput'));
     const main = $('#main');
     let depth = 0;
     const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
@@ -1552,7 +1588,315 @@
     document.body.appendChild(l);
   }
 
-  const closePopovers = () => closeVolMenu() || closeEmoji() || closeLightbox();
+  const closePopovers = () => closeMentions() || closeVolMenu() || closeEmoji() || closeLightbox();
+
+  /* ================================ menções ================================ */
+  // "@Bia Ramos" — nomes podem ter espaços, então a menção é reconhecida contra a lista de nomes conhecidos.
+  const norm = (t) => String(t || '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+  const escRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const reCache = new Map();
+  function mentionRe(names, flags = 'giu') {
+    const list = [...new Set(names.filter(Boolean))].sort((a, b) => b.length - a.length);
+    if (!list.length) return null;
+    const key = flags + '|' + list.join('\u0001');
+    let re = reCache.get(key);
+    if (!re) {
+      // não precedido nem seguido de letra/número: "a@b.com" e "@Theodoro" não viram menção a "Theo"
+      re = new RegExp(`(?<![\\p{L}\\p{N}_])@(${list.map(escRe).join('|')})(?![\\p{L}\\p{N}_])`, flags);
+      if (reCache.size > 50) reCache.clear();
+      reCache.set(key, re);
+    }
+    re.lastIndex = 0;
+    return re;
+  }
+  const mentionsMe = (text) => !!(text && S.me && mentionRe([S.me.name], 'iu')?.test(text));
+
+  /** Nomes que podem ser mencionados num canal: membros do servidor + autores do histórico. */
+  function knownNames(channelId) {
+    const names = new Set();
+    const srv = [...S.servers.values()].find((x) => x.channels.some((c) => c.id === channelId)) || activeServer();
+    srv?.members.forEach((m) => names.add(m.name));
+    (S.messages.get(channelId) || []).forEach((m) => names.add(m.author.name));
+    if (S.me) names.add(S.me.name);
+    return [...names];
+  }
+  function channelById(id) {
+    for (const srv of S.servers.values()) { const c = srv.channels.find((x) => x.id === id); if (c) return c; }
+    return null;
+  }
+
+  /** Texto da mensagem → HTML seguro com links e menções destacadas. */
+  const URL_SPLIT = /(https?:\/\/[^\s<]+)/g;
+  function richText(text, names) {
+    const re = mentionRe(names);
+    const myName = S.me ? norm(S.me.name) : '';
+    return String(text).split(URL_SPLIT).map((part, i) => {
+      if (i % 2) return `<a href="${esc(part)}" target="_blank" rel="noopener noreferrer">${esc(part)}</a>`;
+      if (!re) return esc(part);
+      let out = '', last = 0;
+      for (const m of part.matchAll(re)) {
+        out += esc(part.slice(last, m.index));
+        out += `<span class="mention ${norm(m[1]) === myName ? 'me' : ''}">@${esc(m[1])}</span>`;
+        last = m.index + m[0].length;
+      }
+      return out + esc(part.slice(last));
+    }).join('');
+  }
+
+  let lastDing = 0;
+  /** "Plim" de duas notas, gerado na hora (sem arquivo de áudio). */
+  function mentionDing() {
+    if (S.deafened || Date.now() - lastDing < 1200) return;
+    lastDing = Date.now();
+    try {
+      sfxCtx ||= new AudioContext();
+      const t0 = sfxCtx.currentTime;
+      [[987.8, 0], [1318.5, 0.09]].forEach(([f, d]) => {
+        const o = sfxCtx.createOscillator(), g = sfxCtx.createGain();
+        o.type = 'triangle';
+        o.frequency.value = f;
+        g.gain.setValueAtTime(0.0001, t0 + d);
+        g.gain.exponentialRampToValueAtTime(0.11, t0 + d + 0.015);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + d + 0.32);
+        o.connect(g).connect(sfxCtx.destination);
+        o.start(t0 + d);
+        o.stop(t0 + d + 0.35);
+      });
+    } catch {}
+  }
+
+  /* ---- autocomplete ---- */
+  const MP = { items: [], sel: 0, open: false };
+  function mentionQuery(input) {
+    const pos = input.selectionStart ?? input.value.length;
+    if (pos !== (input.selectionEnd ?? pos)) return null;
+    const before = input.value.slice(0, pos);
+    const at = before.lastIndexOf('@');
+    if (at < 0) return null;
+    if (at > 0 && /[\p{L}\p{N}_]/u.test(before[at - 1])) return null; // e-mail
+    const q = before.slice(at + 1);
+    if (q.length > 32) return null;
+    return { start: at, end: pos, q };
+  }
+  function mentionCandidates(q) {
+    const srv = activeServer();
+    if (!srv) return [];
+    const nq = norm(q);
+    const seen = new Set(), pre = [], mid = [];
+    for (const m of srv.members) {
+      if (m.id === S.me?.id || seen.has(norm(m.name))) continue;
+      seen.add(norm(m.name));
+      const n = norm(m.name);
+      if (n.startsWith(nq)) pre.push(m);
+      else if (nq && n.split(/\s+/).some((w) => w.startsWith(nq))) mid.push(m);
+    }
+    const rank = (m) => (m.voice ? 0 : 1);
+    pre.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+    return [...pre, ...mid].slice(0, 8);
+  }
+  function closeMentions() {
+    const p = $('.mention-pop');
+    MP.open = false;
+    if (!p) return false;
+    p.remove();
+    return true;
+  }
+  function renderMentions(input) {
+    const q = mentionQuery(input);
+    const items = q ? mentionCandidates(q.q) : [];
+    if (!q || !items.length) return closeMentions();
+    closeEmoji();
+    MP.items = items;
+    MP.sel = Math.min(MP.sel, items.length - 1);
+    MP.open = true;
+    let pop = $('.mention-pop');
+    if (!pop) {
+      pop = document.createElement('div');
+      pop.className = 'mention-pop';
+      pop.setAttribute('role', 'listbox');
+      // pointerdown + preventDefault: o input não perde o foco ao clicar na lista
+      pop.addEventListener('pointerdown', (e) => e.preventDefault());
+      pop.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-mi]');
+        if (b) completeMention(input, MP.items[Number(b.dataset.mi)]);
+      });
+      $('#composer').appendChild(pop);
+    }
+    const hl = (name) => {
+      const n = norm(name), i = q.q ? n.indexOf(norm(q.q)) : -1;
+      if (i < 0) return esc(name);
+      return esc(name.slice(0, i)) + '<mark>' + esc(name.slice(i, i + q.q.length)) + '</mark>' + esc(name.slice(i + q.q.length));
+    };
+    pop.innerHTML = `<div class="mention-title">Membros ${q.q ? `com “${esc(q.q)}”` : 'do servidor'}</div>` + items.map((m, i) => {
+      const vc = m.voice && channelById(m.voice.channelId);
+      const sub = m.state?.screen ? 'transmitindo agora' : vc ? `em ${vc.name}` : 'online';
+      return `<button type="button" class="mention-item ${i === MP.sel ? 'sel' : ''}" data-mi="${i}" role="option" aria-selected="${i === MP.sel}">
+        ${avatar(m, 'sm')}<span class="mi-name"><b>${hl(m.name)}</b><small>${esc(sub)}</small></span>${i === MP.sel ? '<kbd>Tab</kbd>' : ''}</button>`;
+    }).join('');
+    $('.mention-item.sel', pop)?.scrollIntoView({ block: 'nearest' });
+  }
+  function completeMention(input, m) {
+    const q = mentionQuery(input);
+    if (!q || !m) return closeMentions();
+    const after = input.value.slice(q.end);
+    const ins = '@' + m.name + (after.startsWith(' ') ? '' : ' ');
+    input.setRangeText(ins, q.start, q.end, 'end');
+    if (after.startsWith(' ')) input.setSelectionRange(input.selectionStart + 1, input.selectionStart + 1);
+    closeMentions();
+    input.focus();
+  }
+  function wireMentions(input) {
+    MP.sel = 0;
+    input.addEventListener('input', () => { MP.sel = 0; renderMentions(input); });
+    input.addEventListener('click', () => renderMentions(input));
+    input.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== input) closeMentions(); }, 120));
+    input.addEventListener('keydown', (e) => {
+      if (!MP.open || e.isComposing) return;
+      const n = MP.items.length;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        MP.sel = (MP.sel + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
+        renderMentions(input);
+      } else if (e.key === 'Tab' || e.key === 'Enter') {
+        e.preventDefault(); // Enter completa o nome em vez de enviar a mensagem
+        completeMention(input, MP.items[MP.sel]);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        closeMentions();
+      }
+    });
+  }
+
+  /* ========================= Picture-in-Picture (PC) ========================= */
+  // Um <video> próprio, fora dos cards: assim a janela flutuante não fecha quando a grade
+  // se reorganiza (o Chrome encerra o PiP se o elemento sair do DOM).
+  let pipEl = null;
+  function pipSink() {
+    if (pipEl) return pipEl;
+    pipEl = document.createElement('video');
+    pipEl.className = 'pip-sink';
+    pipEl.muted = true;           // o áudio já toca pelos <audio> de cada participante
+    pipEl.playsInline = true;
+    pipEl.autoplay = true;
+    pipEl.setAttribute('aria-hidden', 'true');
+    pipEl.addEventListener('leavepictureinpicture', () => {
+      S.pip = null;
+      pipEl.srcObject = null;
+      if (S.view === 'voice') updateStage();
+    });
+    document.body.appendChild(pipEl);
+    return pipEl;
+  }
+  function pipStreamFor(key) {
+    if (!S.voice || !key) return null;
+    const [kind, id] = [key.slice(0, 1), key.slice(2)];
+    const m = voiceMembers().find((x) => x.id === id);
+    if (!m) return null;
+    if (kind === 's') return m.state?.screen ? S.voice.streamFor(m, 'screen') : null;
+    return m.state?.camera ? S.voice.streamFor(m, 'cam') : null;
+  }
+  async function togglePip(key) {
+    if (!CAN_PIP) return;
+    const v = pipSink();
+    try {
+      if (document.pictureInPictureElement === v && S.pip?.key === key) { await document.exitPictureInPicture(); return; }
+      const stream = pipStreamFor(key);
+      if (!stream) return toast('Esse vídeo ainda está conectando.');
+      if (v.srcObject !== stream) v.srcObject = stream;
+      if (v.readyState < 1) await new Promise((r) => { v.addEventListener('loadedmetadata', r, { once: true }); setTimeout(r, 1500); });
+      v.play().catch(() => {});
+      await v.requestPictureInPicture();
+      S.pip = { key };
+    } catch (e) {
+      S.pip = null;
+      toast('Não foi possível abrir a janela flutuante: ' + (e.message || e.name), 'err');
+    }
+    if (S.view === 'voice') updateStage();
+  }
+  /** Mantém o PiP ligado ao vídeo certo; fecha se a câmera/transmissão acabar. */
+  function syncPip() {
+    if (!S.pip || !pipEl) return;
+    const s = pipStreamFor(S.pip.key);
+    if (!s) return exitPip();
+    if (pipEl.srcObject !== s) { pipEl.srcObject = s; pipEl.play().catch(() => {}); }
+  }
+  function exitPip() {
+    if (pipEl && document.pictureInPictureElement === pipEl) document.exitPictureInPicture().catch(() => {});
+    S.pip = null;
+  }
+
+  /* ============== tela preta em streamings (Netflix, Prime, Disney+…) ============== */
+  const STREAMING_RE = /chrome|edge|brave|opera|vivaldi|firefox|navegador|netflix|prime video|disney|\bmax\b|hbo|globoplay|crunchyroll|paramount|star\+|apple tv/i;
+  const BROWSERS = [
+    { name: 'Chrome', url: 'chrome://settings/system' },
+    { name: 'Edge', url: 'edge://settings/system' },
+    { name: 'Brave', url: 'brave://settings/system' },
+  ];
+  function drmGuideHTML(isEl) {
+    return `
+      <details class="drm" id="drmBox">
+        <summary class="drm-sum">${icon('alert')}<span><b>Tela preta na Netflix, Prime Video ou Disney+?</b><small>Corrija em 1 minuto no navegador que toca o filme</small></span><span class="drm-cta">Corrigir</span>${icon('chevron')}</summary>
+        <div class="drm-body">
+          <p>Esses serviços usam DRM, que bloqueia a captura quando o navegador decodifica o vídeo pela placa de vídeo. Seus amigos veem tudo, menos o filme. A correção é <b>desligar a aceleração de hardware no navegador</b>, não no Cinecria.</p>
+          <ol class="drm-steps">
+            <li><span>Copie o endereço do seu navegador e cole na barra de endereço <b>dele</b>:</span>
+              <div class="drm-chips">${BROWSERS.map((b) => `<button type="button" class="drm-chip" data-copy="${b.url}"><b>${b.name}</b><code>${b.url}</code><span class="drm-copy">${icon('copy')}</span></button>`).join('')}</div>
+              <small class="drm-ff"><b>Firefox:</b> Configurações → Geral → Desempenho → desmarque “Usar configurações de desempenho recomendadas” e “Usar aceleração de hardware quando disponível”.</small></li>
+            <li><span>Desligue <b>“Usar aceleração de hardware quando disponível”</b> (Chrome/Brave) ou <b>“Usar aceleração gráfica quando disponível”</b> (Edge) e clique em <b>Reiniciar</b>.</span></li>
+            <li><span>Volte aqui e transmita a <b>janela do navegador</b>${isEl ? ' (aba “Janelas e jogos”)' : ''}. Depois da sessão, pode religar a opção.</span></li>
+          </ol>
+          <p class="drm-note">${icon('alert')}Os apps da Microsoft Store (Netflix, Disney+ e Prime para Windows) sempre ficam pretos na captura. Use o site no navegador.</p>
+          ${isEl ? `
+          <div class="drm-compat">
+            <div><b>A imagem fica preta dentro do próprio Cinecria?</b><small>Raro, e diferente do problema acima: alguns drivers de vídeo não exibem os vídeos dos amigos. O modo compatibilidade desliga a aceleração de hardware do Cinecria (usa mais CPU) e reinicia o app.</small></div>
+            <button type="button" class="btn ghost sm" id="compatBtn" disabled>…</button>
+          </div>` : ''}
+        </div>
+      </details>`;
+  }
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); return true; } catch {}
+    try {
+      const ta = Object.assign(document.createElement('textarea'), { value: text });
+      ta.style.cssText = 'position:fixed;opacity:0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      return ok;
+    } catch { return false; }
+  }
+  async function wireDrmGuide(modal, isEl) {
+    const box = $('#drmBox', modal);
+    box.addEventListener('click', async (e) => {
+      const chip = e.target.closest('[data-copy]');
+      if (!chip) return;
+      const ok = await copyText(chip.dataset.copy);
+      chip.classList.add(ok ? 'copied' : 'fail');
+      $('.drm-copy', chip).innerHTML = ok ? `${icon('check')}Copiado` : 'Copie manualmente';
+      setTimeout(() => { chip.classList.remove('copied', 'fail'); $('.drm-copy', chip).innerHTML = icon('copy'); }, 1800);
+    });
+    if (!isEl || !window.cinecria.getSettings) return;
+    const btn = $('#compatBtn', modal);
+    let st = {};
+    try { st = await window.cinecria.getSettings(); } catch {}
+    const label = () => (st.compatVideo ? 'Desativar modo compatibilidade' : 'Ativar modo compatibilidade');
+    btn.textContent = label();
+    btn.disabled = false;
+    let armed = false;
+    btn.addEventListener('click', () => {
+      if (!armed) { // 2 cliques: reiniciar derruba a chamada
+        armed = true;
+        btn.textContent = 'Reiniciar o Cinecria agora?';
+        btn.classList.add('armed');
+        setTimeout(() => { armed = false; btn.textContent = label(); btn.classList.remove('armed'); }, 4000);
+        return;
+      }
+      teardownVoice(false);
+      window.cinecria.setCompatVideo(!st.compatVideo);
+    });
+  }
 
   /* ================== luz ambiente da transmissão ("ambilight") ================== */
   // A cor média da tela em foco tinge o palco — efeito de sala escura iluminada pelo filme.

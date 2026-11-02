@@ -11,4 +11,8 @@ contextBridge.exposeInMainWorld('cinecria', {
   getSources: () => ipcRenderer.invoke('screen:get-sources'),
   /** Define a fonte que o próximo getDisplayMedia() vai capturar. */
   selectSource: (sel) => ipcRenderer.invoke('screen:select', sel),
+  /** { compatVideo, gpuDisabled } */
+  getSettings: () => ipcRenderer.invoke('settings:get'),
+  /** Liga/desliga o modo compatibilidade de vídeo — o app reinicia. */
+  setCompatVideo: (on) => ipcRenderer.invoke('settings:set-compat', !!on),
 });

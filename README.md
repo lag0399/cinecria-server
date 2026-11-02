@@ -1,5 +1,7 @@
 # 🎬 Cinecria
 
+> 📱 Versão Android: veja [`mobile/README.md`](mobile/README.md) · 🆕 Novidades da 1.1 (visual "Sala Escura", volume individual, emojis e mídia no chat): [`ATUALIZACAO-1.1.md`](ATUALIZACAO-1.1.md). · 🆕 1.2 (menções, câmera vertical, PiP, tela preta em streamings): [`ATUALIZACAO-1.2.md`](ATUALIZACAO-1.2.md).
+
 Assista junto com seus amigos: servidores, canais de texto e de voz, e **compartilhamento de tela em alta qualidade** (até 1440p/60 FPS com áudio do sistema). Sem cadastro: apelido + foto e pronto.
 
 ---
@@ -11,6 +13,7 @@ cinecria/
 ├── server/                     # Servidor de sinalização (Node.js + Socket.io)
 │   ├── index.js                #   sessões, servidores, convites, chat, presença, relay WebRTC
 │   └── package.json
+├── mobile/                     # App Android (Capacitor) — reaproveita app/renderer, veja mobile/README.md
 └── app/                        # Aplicativo desktop (Electron)
     ├── main.js                 #   janela, desktopCapturer, getDisplayMedia + áudio loopback
     ├── preload.js              #   ponte segura (contextBridge) → window.cinecria

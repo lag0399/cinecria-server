@@ -293,10 +293,14 @@
 
     async startCamera() {
       const c = CFG.camera;
-      this.camStream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: c.width }, height: { ideal: c.height }, frameRate: { ideal: c.fps } },
-        audio: false,
-      });
+      // Celular: sem largura/altura — o sensor entrega na orientação nativa (9:16 em pé, 16:9 deitado).
+      // Pedir 1280×720 num celular em pé faz alguns aparelhos cortarem/girarem a imagem.
+      // PC: "ideal" (nunca "exact") — só sugere 720p para webcams que abririam em 640×480.
+      const mobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+      const video = mobile
+        ? { facingMode: 'user', frameRate: { ideal: c.fps, max: c.fps } }
+        : { width: { ideal: c.width }, height: { ideal: c.height }, frameRate: { ideal: c.fps } };
+      this.camStream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
       const track = this.camStream.getVideoTracks()[0];
       track.contentHint = 'motion';
       track.onended = () => this.stopCamera();
