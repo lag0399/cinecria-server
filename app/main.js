@@ -69,7 +69,8 @@ function createWindow() {
     minHeight: 620,
     backgroundColor: '#0c0c14',
     title: 'Cinecria',
-    icon: path.join(__dirname, 'build', 'icon.png'),
+    // Windows usa o .ico (vários tamanhos: barra de tarefas, Alt+Tab); os outros, o .png
+    icon: path.join(__dirname, 'build', process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
     autoHideMenuBar: true,
     show: false,
     webPreferences: {

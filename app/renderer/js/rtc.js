@@ -23,7 +23,7 @@
    *    (os primeiros segundos ficam borrados) e, em várias versões, limita o vídeo a ~2,5 Mbps
    *    mesmo com encodings[0].maxBitrate maior.
    */
-  const VIDEO_KBPS = { start: 4000, min: 600, max: 20000 };
+  const VIDEO_KBPS = { start: 2500, min: 500, max: 20000 }; // o teto real é o maxBitrate do perfil
   function tuneSdp(sdp) {
     const pts = [...sdp.matchAll(/a=rtpmap:(\d+) opus\/48000\/2/gi)].map((m) => m[1]);
     for (const pt of pts) {
@@ -307,7 +307,8 @@
 
       this.publish();
       for (const id of res.peers) this.getPeer(id);
-      this._speakTimer = setInterval(() => this.detectSpeaking(), 120);
+      // UM timer leve para todos (≈6,7 vezes/s) — nada de requestAnimationFrame por pessoa
+      this._speakTimer = setInterval(() => this.detectSpeaking(), 150);
       return this;
     }
 
@@ -348,7 +349,7 @@
     peerJoined(id) { this.getPeer(id); }
     peerLeft(id) {
       const p = this.peers.get(id);
-      if (p) { p.close(); this.peers.delete(id); this.changed(); }
+      if (p) { p.close(); this.peers.delete(id); this.dropAnalyser(id); this.changed(); }
     }
 
     setMuted(muted) {
@@ -410,7 +411,7 @@
 
       const v = stream.getVideoTracks()[0];
       v.contentHint = hint; // 'motion' = prioriza fluidez | 'detail' = prioriza nitidez
-      try { await v.applyConstraints(video); } catch {}
+      // (sem applyConstraints extra: reconfigurar o track força um redimensionamento a mais)
       v.onended = () => this.stopScreen(); // "Parar compartilhamento" do sistema
       const a = stream.getAudioTracks()[0];
       if (a) a.contentHint = 'music';
@@ -500,17 +501,30 @@
     }
 
     /** Indicador "falando" (anel verde) via WebAudio. */
+    /** Desliga e descarta o analisador de uma pessoa (evita vazamento de memória/áudio). */
+    dropAnalyser(key) {
+      const a = this._analysers.get(key);
+      if (!a) return;
+      try { a.src.disconnect(); a.node.disconnect(); } catch {}
+      this._analysers.delete(key);
+    }
+
     detectSpeaking() {
-      const ctx = (this._ctx ||= new AudioContext());
+      if (document.hidden) return; // ninguém está vendo o anel verde
+      const ctx = this.outCtx; // mesmo AudioContext do volume: um só thread de áudio
+      if (!ctx) return;
+      const seen = new Set();
       const check = (key, stream) => {
         if (!stream || !stream.getAudioTracks().length) return false;
+        seen.add(key);
         let a = this._analysers.get(key);
         if (!a || a.stream !== stream) {
+          this.dropAnalyser(key);
           const src = ctx.createMediaStreamSource(stream);
           const node = ctx.createAnalyser();
-          node.fftSize = 512;
+          node.fftSize = 256; // 256 amostras bastam para "tem voz ou não"
           src.connect(node);
-          a = { stream, node, buf: new Uint8Array(node.fftSize) };
+          a = { stream, src, node, buf: new Uint8Array(node.fftSize) };
           this._analysers.set(key, a);
         }
         a.node.getByteTimeDomainData(a.buf);
@@ -526,6 +540,7 @@
         if (!st || st.muted) continue;
         if (check(p.id, p.streams.get(st.micStreamId))) now.add(p.id);
       }
+      for (const key of [...this._analysers.keys()]) if (!seen.has(key)) this.dropAnalyser(key); // saiu / mutou
       const changed = now.size !== this.speaking.size || [...now].some((id) => !this.speaking.has(id));
       if (changed) { this.speaking = now; this.onSpeaking(now); }
     }
@@ -539,6 +554,7 @@
 
     leave() {
       clearInterval(this._speakTimer);
+      for (const key of [...this._analysers.keys()]) this.dropAnalyser(key);
       for (const p of this.peers.values()) p.close();
       this.peers.clear();
       this.stopLocal();

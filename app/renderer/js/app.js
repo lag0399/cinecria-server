@@ -78,6 +78,14 @@
     volX: '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="m22 9-6 6M16 9l6 6"/>',
     reset: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/>',
     film: '<rect x="2" y="3" width="20" height="18" rx="2"/><path d="M7 3v18M17 3v18M2 8h5M2 13h5M2 18h5M17 8h5M17 13h5M17 18h5"/>',
+    bulb: '<path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V18h6v-1.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/>',
+    trend: '<path d="m3 17 6-6 4 4 8-8"/><path d="M14 7h7v7"/>',
+    back: '<path d="m15 18-6-6 6-6"/>',
+    minus: '<path d="M5 12h14"/>',
+    image: '<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    door: '<path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h8"/><path d="M14 3l5 2v14l-5 2z"/><path d="M11 12h.01"/>',
+    shield: '<path d="M12 2 4 5v6c0 5 3.5 9.5 8 11 4.5-1.5 8-6 8-11V5z"/><path d="m9 12 2 2 4-4"/>',
     folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
     sparkles: '<path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>',
     lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
@@ -228,7 +236,9 @@
           st.upload = await readRaw(f); // animação preservada
         } else {
           if (!/^image\/(png|jpeg|webp)$/.test(f.type)) return toast('Use PNG, JPG, WebP ou GIF.', 'err');
-          st.upload = await resizeImage(f);
+          const cropped = await openCropper(f); // enquadrar + zoom antes de aplicar
+          if (!cropped) return;
+          st.upload = cropped;
         }
         st.mode = 'upload';
         render();
@@ -236,6 +246,7 @@
     });
     nameInput.addEventListener('input', () => st.mode === 'preset' && render());
     render();
+    fillGifMosaic(root);
     return { value, state: () => ({ ...st }) };
   }
 
@@ -246,8 +257,105 @@
     IDB.set('avatarUpload', upload || null);
   }
 
-  /* ============================== busca de GIFs ============================== */
-  // Tenor: API desligada pelo Google em 30/06/2026. GIPHY: chave em config.js (gifApiKey).
+  /* ============================== GIFs (KLIPY / GIPHY) ============================== */
+  // Tenor: API desligada pelo Google em 30/06/2026. KLIPY primeiro, GIPHY se o KLIPY falhar.
+  // As buscas saem do próprio app (exigência dos dois provedores).
+  const AV_ACTIONS_HTML = `
+    <div class="av-cards">
+      <button class="av-card up-card av-upload" type="button">
+        <span class="up-ico">${icon('folder')}</span><b>Enviar do dispositivo</b><small>PNG, JPG, WebP ou GIF</small>
+      </button>
+      <button class="av-card gif-card av-gif" type="button">
+        <span class="gif-mosaic"><i></i><i></i><i></i><i></i></span>
+        <span class="gif-card-label"><span class="gif-chip">GIF</span><b>${icon('sparkles')}Escolher GIF</b></span>
+      </button>
+    </div>`;
+  const GIF_CATEGORIES = [
+    { q: '', label: 'GIFs em alta', trend: true },
+    { q: 'hello', label: 'hello' }, { q: 'lol', label: 'lol' }, { q: 'love', label: 'love' },
+    { q: 'happy birthday', label: 'happy birthday' }, { q: 'thank you', label: 'thank you' },
+    { q: 'excited', label: 'excited' }, { q: 'yes', label: 'yes' }, { q: 'no', label: 'no' },
+    { q: 'sorry', label: 'sorry' }, { q: 'anime', label: 'anime' }, { q: 'cinema', label: 'cinema' },
+  ];
+  const GIF = {
+    keys: null,
+    customer: LS.get('gifCustomer', null) || (() => { const id = Math.random().toString(36).slice(2, 14); LS.set('gifCustomer', id); return id; })(),
+    async getKeys() {
+      if (this.keys) return this.keys;
+      const k = { klipy: CFG.klipyKey || '', giphy: CFG.giphyKey || CFG.gifApiKey || '' };
+      if (!k.klipy || !k.giphy) {
+        try { // chaves definidas no Render (KLIPY_API_KEY / GIPHY_API_KEY)
+          const ctrl = new AbortController(); setTimeout(() => ctrl.abort(), 6000);
+          const j = await (await fetch(`${profile.serverUrl}/api/client-config`, { signal: ctrl.signal })).json();
+          k.klipy ||= j?.gif?.klipyKey || ''; k.giphy ||= j?.gif?.giphyKey || '';
+        } catch {}
+      }
+      return (this.keys = k);
+    },
+    async providers() {
+      const k = await this.getKeys(), list = [];
+      if (k.klipy) list.push({ name: 'KLIPY', fetch: (q) => this.klipy(k.klipy, q) });
+      if (k.giphy) list.push({ name: 'GIPHY', fetch: (q) => this.giphy(k.giphy, q) });
+      return list;
+    },
+    /** Busca (q vazio = em alta). Tenta cada provedor; o primeiro que responder vence. */
+    async search(q = '') {
+      const cacheKey = 'gif:' + q.toLowerCase();
+      try { const c = JSON.parse(sessionStorage.getItem(cacheKey) || 'null'); if (c && Date.now() - c.t < 30 * 60e3) return c.r; } catch {}
+      const list = await this.providers();
+      if (!list.length) { const e = new Error('nokey'); e.code = 'nokey'; throw e; }
+      let last;
+      for (const p of list) {
+        try {
+          const items = await p.fetch(q);
+          const r = { provider: p.name, items };
+          try { sessionStorage.setItem(cacheKey, JSON.stringify({ t: Date.now(), r })); } catch {}
+          return r;
+        } catch (e) { last = e; console.warn('[gif]', p.name, e.message); }
+      }
+      throw last;
+    },
+    async klipy(key, q) {
+      const params = new URLSearchParams({ per_page: '24', customer_id: this.customer, locale: 'pt', content_filter: 'medium' });
+      if (q) params.set('q', q.slice(0, 50));
+      const r = await fetch(`https://api.klipy.com/api/v1/${encodeURIComponent(key)}/gifs/${q ? 'search' : 'trending'}?${params}`);
+      if (!r.ok) throw new Error('KLIPY ' + r.status);
+      const j = await r.json();
+      if (j?.result === false) throw new Error('KLIPY recusou');
+      const rows = Array.isArray(j?.data?.data) ? j.data.data : Array.isArray(j?.data) ? j.data : [];
+      const url = (f, sizes, fmt) => { for (const sz of sizes) { const u = f?.[sz]?.[fmt]?.url; if (u) return u; } return null; };
+      return rows.filter((x) => x && x.type !== 'ad' && x.file).map((x) => ({
+        preview: url(x.file, ['xs', 'sm', 'md'], 'gif') || url(x.file, ['xs', 'sm'], 'webp'),
+        use: url(x.file, ['sm', 'md', 'xs'], 'gif'),
+        title: x.title || '',
+      })).filter((x) => x.preview && x.use);
+    },
+    async giphy(key, q) {
+      const params = new URLSearchParams({ api_key: key, limit: '24', rating: CFG.gifRating || 'pg-13' });
+      if (q) { params.set('q', q.slice(0, 50)); params.set('lang', 'pt'); }
+      const r = await fetch(`https://api.giphy.com/v1/gifs/${q ? 'search' : 'trending'}?${params}`);
+      if (!r.ok) throw new Error('GIPHY ' + r.status);
+      const { data = [] } = await r.json();
+      return data.map((g) => ({
+        preview: g.images?.fixed_width_small?.url || g.images?.fixed_width?.url,
+        use: g.images?.fixed_width?.url || g.images?.fixed_width_small?.url,
+        title: g.title || '',
+      })).filter((x) => x.preview && x.use);
+    },
+  };
+  const catPreviews = () => LS.get('gifCatPreview', {});
+
+  /** Mosaico 2×2 animado no card "Escolher GIF" (1 busca de "em alta", em cache por 30 min). */
+  async function fillGifMosaic(root) {
+    const tiles = $$('.gif-mosaic i', root);
+    if (!tiles.length) return;
+    try {
+      const { items } = await GIF.search('');
+      items.slice(0, 4).forEach((it, i) => { tiles[i].style.backgroundImage = `url("${it.preview.replace(/"/g, '%22')}")`; });
+      $('.gif-mosaic', root).classList.add('ready');
+    } catch {}
+  }
+
   function gifFromLink(raw) {
     try {
       const u = new URL(String(raw).trim());
@@ -262,75 +370,183 @@
         m = u.pathname.match(/\/(?:gifs|stickers|embed)\/(?:[\w-]*-)?([A-Za-z0-9]+)\/?$/);
         return m ? `https://media.giphy.com/media/${m[1]}/200w.gif` : null;
       }
-      if (/^(media\d*\.tenor\.com|c\.tenor\.com)$/.test(h) && /\.gif$/i.test(u.pathname)) return u.href;
+      if (/(^|\.)(klipy\.com|klipycdn\.com|tenor\.com)$/.test(h) && /\.(gif|webp)$/i.test(u.pathname)) return u.href;
     } catch {}
     return null;
   }
+
   function closeGifPicker() { const g = $('.gif-back'); if (!g) return false; g.remove(); return true; }
   function openGifPicker(onPick) {
     closeGifPicker();
-    const key = CFG.gifApiKey;
     const ov = document.createElement('div');
     ov.className = 'gif-back';
     ov.innerHTML = `
-      <div class="gif-pop" role="dialog" aria-label="Buscar GIF">
-        <div class="gif-head"><b>${icon('sparkles')}Buscar GIF</b><button type="button" class="icon-btn" data-g="x" title="Fechar">${icon('x')}</button></div>
-        <label class="gif-search">${icon('search')}<input type="search" placeholder="${key ? 'Pesquisar GIFs… (ex.: gato, anime, cinema)' : 'Busca desativada (sem chave do GIPHY)'}" ${key ? '' : 'disabled'} autocomplete="off" spellcheck="false"></label>
-        <div class="gif-grid"></div>
-        <form class="gif-link"><input placeholder="…ou cole o link de um GIF do GIPHY" spellcheck="false" autocomplete="off"><button type="submit" class="btn ghost sm">Usar</button></form>
-        <div class="gif-foot"><span>Clique num GIF para usar como foto</span><span class="giphy-attr">Powered by <b>GIPHY</b></span></div>
+      <div class="gif-pop" role="dialog" aria-label="Escolher GIF">
+        <div class="gif-head">
+          <button type="button" class="icon-btn gif-backbtn hidden" data-g="home" title="Categorias">${icon('back')}</button>
+          <b>Escolher GIF</b><span class="spacer"></span>
+          <button type="button" class="icon-btn" data-g="x" title="Fechar">${icon('x')}</button></div>
+        <label class="gif-search">${icon('search')}<input type="search" placeholder="Buscar GIFs…" autocomplete="off" spellcheck="false"></label>
+        <div class="gif-body"></div>
+        <form class="gif-link"><input placeholder="…ou cole o link de um GIF (GIPHY / KLIPY)" spellcheck="false" autocomplete="off"><button type="submit" class="btn ghost sm">Usar</button></form>
+        <div class="gif-foot"><span class="gif-attr">Busca de GIFs</span></div>
       </div>`;
     document.body.appendChild(ov);
-    const grid = $('.gif-grid', ov), input = $('.gif-search input', ov);
+    const body = $('.gif-body', ov), input = $('.gif-search input', ov), backBtn = $('.gif-backbtn', ov);
+    const attr = (p) => { $('.gif-attr', ov).innerHTML = p ? `Powered by <b>${p}</b>` : 'Busca de GIFs'; };
+    const msg = (html) => { body.innerHTML = `<div class="gif-msg">${icon('info')}<span>${html}</span></div>`; };
     const choose = (url) => {
-      // confere se o GIF existe antes de aplicar
       const test = new Image();
       test.onload = () => { onPick(url); closeGifPicker(); };
       test.onerror = () => toast('Não consegui carregar esse GIF.', 'err');
       test.src = url;
     };
+    const fail = (e) => {
+      if (e?.code === 'nokey') return msg('A busca precisa de uma chave grátis do <b>KLIPY</b> ou do <b>GIPHY</b> (no Render: <code>KLIPY_API_KEY</code> / <code>GIPHY_API_KEY</code>, ou em <code>config.js</code>). A API do Tenor foi desligada pelo Google em 30/06/2026.<br>Enquanto isso, cole abaixo o link de um GIF.');
+      msg('Não deu para buscar GIFs agora (limite da chave ou sem conexão). Tente de novo em instantes ou cole um link abaixo.');
+    };
+
+    async function home() {
+      backBtn.classList.add('hidden');
+      input.value = '';
+      const prev = catPreviews();
+      body.innerHTML = `<div class="gif-cats">${GIF_CATEGORIES.map((c, i) => `
+        <button type="button" class="gif-cat" data-cat="${i}"><span class="gif-cat-bg" ${prev[c.q] ? `style="background-image:url('${esc(prev[c.q])}')"` : ''}></span>
+          <b>${c.trend ? icon('trend') : ''}${esc(c.label)}</b></button>`).join('')}</div>`;
+      try {
+        const { items, provider } = await GIF.search('');
+        attr(provider);
+        // fundo de cada categoria: a prévia guardada dela, ou um GIF em alta enquanto não há
+        $$('.gif-cat', body).forEach((el, i) => {
+          const bg = $('.gif-cat-bg', el);
+          if (!bg.style.backgroundImage && items[i]) bg.style.backgroundImage = `url('${items[i].preview}')`;
+        });
+      } catch (e) { if (e?.code === 'nokey') fail(e); }
+    }
+    let seq = 0;
+    async function results(q, label) {
+      const my = ++seq;
+      backBtn.classList.remove('hidden');
+      body.innerHTML = `<div class="gif-title">${esc(label || `“${q}”`)}</div><div class="gif-grid loading">${'<span class="gif-skel"></span>'.repeat(12)}</div>`;
+      try {
+        const { items, provider } = await GIF.search(q);
+        if (my !== seq) return;
+        attr(provider);
+        if (q && items[0]) { const p = catPreviews(); p[q.toLowerCase()] = items[0].preview; LS.set('gifCatPreview', p); }
+        if (!items.length) return msg('Nenhum GIF encontrado.');
+        $('.gif-grid', body).classList.remove('loading');
+        $('.gif-grid', body).innerHTML = items.map((g) => `<button type="button" class="gif-item" data-gif="${esc(g.use)}" title="${esc(g.title)}"><img src="${esc(g.preview)}" alt="" loading="lazy"></button>`).join('');
+      } catch (e) { if (my === seq) fail(e); }
+    }
+
     ov.addEventListener('mousedown', (e) => { if (e.target === ov) closeGifPicker(); });
     ov.addEventListener('click', (e) => {
       if (e.target.closest('[data-g=x]')) return closeGifPicker();
+      if (e.target.closest('[data-g=home]')) return home();
+      const c = e.target.closest('[data-cat]');
+      if (c) { const cat = GIF_CATEGORIES[Number(c.dataset.cat)]; return results(cat.q, cat.trend ? 'GIFs em alta' : cat.label); }
       const g = e.target.closest('[data-gif]');
       if (g) choose(g.dataset.gif);
+    });
+    let timer = null;
+    input.addEventListener('input', () => {
+      clearTimeout(timer);
+      const q = input.value.trim();
+      timer = setTimeout(() => (q ? results(q) : home()), 450); // espera parar de digitar: poupa o limite da chave
     });
     $('.gif-link', ov).addEventListener('submit', (e) => {
       e.preventDefault();
       const url = gifFromLink($('.gif-link input', ov).value);
-      if (!url) return toast('Cole um link do GIPHY (giphy.com/gifs/…) ou de um arquivo .gif dele.', 'err');
+      if (!url) return toast('Cole um link do GIPHY (giphy.com/gifs/…) ou o endereço .gif do KLIPY.', 'err');
       choose(url);
     });
-    const msg = (html) => { grid.innerHTML = `<div class="gif-msg">${html}</div>`; };
-    if (!key) {
-      msg(`${icon('info')}<span>A busca precisa de uma chave grátis do GIPHY em <code>config.js</code> (<code>gifApiKey</code>). A API do Tenor foi desligada pelo Google em 30/06/2026.<br>Enquanto isso, cole abaixo o link de um GIF do <b>giphy.com</b>.</span>`);
-      setTimeout(() => $('.gif-link input', ov).focus(), 30);
-      return;
-    }
-    let seq = 0, timer = null;
-    async function load(q) {
-      const my = ++seq;
-      grid.classList.add('loading');
-      const params = new URLSearchParams({ api_key: key, limit: '24', rating: CFG.gifRating || 'pg-13' });
-      if (q) { params.set('q', q.slice(0, 50)); params.set('lang', 'pt'); }
-      try {
-        const r = await fetch(`https://api.giphy.com/v1/gifs/${q ? 'search' : 'trending'}?${params}`);
-        if (my !== seq) return;
-        if (r.status === 429) return msg('Limite de buscas da chave do GIPHY atingido (chave beta: 100 por hora). Tente mais tarde ou cole um link abaixo.');
-        if (!r.ok) return msg(`O GIPHY recusou a busca (${r.status}). Confira a chave em <code>config.js</code>.`);
-        const { data = [] } = await r.json();
-        if (!data.length) return msg('Nenhum GIF encontrado.');
-        grid.innerHTML = data.map((g) => {
-          const prev = g.images?.fixed_width_small?.url || g.images?.fixed_width?.url;
-          const use = g.images?.fixed_width?.url || prev; // 200 px: nítido como avatar, leve para quem vê
-          return prev && use ? `<button type="button" class="gif-item" data-gif="${esc(use)}" title="${esc(g.title || '')}"><img src="${esc(prev)}" alt="" loading="lazy"></button>` : '';
-        }).join('');
-      } catch { if (my === seq) msg('Sem conexão com o GIPHY.'); }
-      finally { if (my === seq) grid.classList.remove('loading'); }
-    }
-    input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => load(input.value.trim()), 450); });
-    load('');
+    home();
     setTimeout(() => input.focus(), 30);
+  }
+
+  /* ============================ editor de recorte ============================ */
+  /** Abre "Editar imagem": arrastar para enquadrar + zoom. Resolve com o recorte 256×256 ou null. */
+  function openCropper(file) {
+    return new Promise((resolve) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onerror = () => { URL.revokeObjectURL(url); toast('Não consegui ler essa imagem.', 'err'); resolve(null); };
+      img.onload = () => {
+        const ov = document.createElement('div');
+        ov.className = 'crop-back';
+        ov.innerHTML = `
+          <div class="crop-pop" role="dialog" aria-label="Editar imagem">
+            <div class="crop-head"><b>Editar imagem</b><button type="button" class="icon-btn" data-c="x" title="Cancelar">${icon('x')}</button></div>
+            <div class="crop-stage"><img alt="" draggable="false"><div class="crop-mask"></div></div>
+            <div class="crop-zoom">
+              <button type="button" class="icon-btn" data-c="out" title="Afastar">${icon('minus')}</button>
+              <input type="range" min="1" max="4" step="0.01" value="1" aria-label="Zoom">
+              <button type="button" class="icon-btn" data-c="in" title="Aproximar">${icon('plus')}</button>
+            </div>
+            <small class="crop-hint">Arraste para enquadrar · role o mouse ou faça pinça para dar zoom</small>
+            <div class="crop-foot"><button type="button" class="btn ghost" data-c="x">Cancelar</button><button type="button" class="btn primary" data-c="ok">Aplicar</button></div>
+          </div>`;
+        document.body.appendChild(ov);
+        const stage = $('.crop-stage', ov), pic = $('img', stage), range = $('input[type=range]', ov);
+        pic.src = url;
+        const V = () => stage.clientWidth;                       // viewport quadrado
+        const base = () => Math.max(V() / img.naturalWidth, V() / img.naturalHeight); // "cobrir"
+        const st = { z: 1, x: 0, y: 0 };
+        const clamp = () => {
+          const k = base() * st.z, w = img.naturalWidth * k, h = img.naturalHeight * k;
+          const mx = Math.max(0, (w - V()) / 2), my = Math.max(0, (h - V()) / 2);
+          st.x = Math.min(mx, Math.max(-mx, st.x));
+          st.y = Math.min(my, Math.max(-my, st.y));
+        };
+        const draw = () => {
+          clamp();
+          const k = base() * st.z, w = img.naturalWidth * k, h = img.naturalHeight * k;
+          pic.style.width = w + 'px'; pic.style.height = h + 'px';
+          pic.style.transform = `translate(${(V() - w) / 2 + st.x}px, ${(V() - h) / 2 + st.y}px)`;
+          range.value = st.z;
+        };
+        const zoomTo = (z) => { st.z = Math.min(4, Math.max(1, z)); draw(); };
+        const done = (out) => { URL.revokeObjectURL(url); ov.remove(); resolve(out); };
+        // arrastar (mouse/dedo) + pinça com dois dedos
+        const pts = new Map();
+        let pinch0 = null;
+        stage.addEventListener('pointerdown', (e) => { stage.setPointerCapture(e.pointerId); pts.set(e.pointerId, { x: e.clientX, y: e.clientY }); if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch0 = { d: Math.hypot(a.x - b.x, a.y - b.y), z: st.z }; } });
+        stage.addEventListener('pointermove', (e) => {
+          const p = pts.get(e.pointerId);
+          if (!p) return;
+          if (pts.size === 1) { st.x += e.clientX - p.x; st.y += e.clientY - p.y; }
+          p.x = e.clientX; p.y = e.clientY;
+          if (pts.size === 2 && pinch0) { const [a, b] = [...pts.values()]; zoomTo(pinch0.z * Math.hypot(a.x - b.x, a.y - b.y) / pinch0.d); }
+          else draw();
+        });
+        const up = (e) => { pts.delete(e.pointerId); if (pts.size < 2) pinch0 = null; };
+        stage.addEventListener('pointerup', up);
+        stage.addEventListener('pointercancel', up);
+        stage.addEventListener('wheel', (e) => { e.preventDefault(); zoomTo(st.z * (e.deltaY < 0 ? 1.08 : 1 / 1.08)); }, { passive: false });
+        range.addEventListener('input', () => zoomTo(Number(range.value)));
+        ov.addEventListener('click', (e) => {
+          const b = e.target.closest('[data-c]');
+          if (!b) return;
+          if (b.dataset.c === 'x') return done(null);
+          if (b.dataset.c === 'in') return zoomTo(st.z + 0.25);
+          if (b.dataset.c === 'out') return zoomTo(st.z - 0.25);
+          // recorte exato do que está dentro do quadro → canvas 256×256
+          const k = base() * st.z, w = img.naturalWidth * k, h = img.naturalHeight * k;
+          const left = (V() - w) / 2 + st.x, top = (V() - h) / 2 + st.y;
+          const c = document.createElement('canvas');
+          c.width = c.height = 256;
+          const g = c.getContext('2d');
+          g.imageSmoothingQuality = 'high';
+          g.drawImage(img, -left / k, -top / k, V() / k, V() / k, 0, 0, 256, 256);
+          const webp = c.toDataURL('image/webp', 0.9);
+          done(webp.startsWith('data:image/webp') ? webp : c.toDataURL('image/jpeg', 0.9));
+        });
+        ov.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); done(null); } });
+        requestAnimationFrame(draw);
+        setTimeout(() => $('[data-c=ok]', ov).focus(), 30);
+      };
+      img.src = url;
+    });
   }
 
   /* ================================= estado ================================ */
@@ -362,7 +578,9 @@
     pip: null,                           // { key } do vídeo em Picture-in-Picture
     callOpen: LS.get('callChatOpen', false), // painel "Chat da sala" aberto no palco
     callUnread: 0,                       // mensagens novas no chat da sala com o painel fechado
-    hideOwnPreview: LS.get('hideOwnPreview', false),
+    hideOwnPreview: LS.get('hideOwnPreview', CFG.hideOwnPreviewByDefault !== false),
+    lights: LS.get('ambilight', CFG.ambilight?.enabled !== false), // "Luzes de cinema"
+    resumeKey: LS.get('resumeKey', null),
     statsKey: null,                      // card com o painel de estatísticas aberto
     composerChannel: null,               // canal do composer visível (texto ou chat da sala)
     gpuDisabled: false,
@@ -558,6 +776,7 @@
     connect(loginPicker.value());
   }
 
+  $('#nick').addEventListener('input', () => $('#nick').classList.remove('invalid'));
   function showLogin(msg = '') {
     $('#app').classList.add('hidden');
     $('#login').classList.remove('hidden');
@@ -578,8 +797,14 @@
     S.avatarData = avatarData;
 
     socket.on('connect', async () => {
-      const res = await req('hello', { name: profile.name, avatar: S.avatarData, invites: LS.get('invites', []) });
-      if (res.error) { socket.disconnect(); return showLogin(res.error); }
+      if (!S.resumeKey) { S.resumeKey = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join(''); LS.set('resumeKey', S.resumeKey); }
+      const res = await req('hello', { name: profile.name, avatar: S.avatarData, invites: LS.get('invites', []), resume: S.resumeKey });
+      if (res.error) {
+        socket.disconnect();
+        showLogin(res.error);
+        if (res.code === 'name_taken') { $('#nick').classList.add('invalid'); $('#nick').focus(); $('#nick').select(); }
+        return;
+      }
       onInit(res);
     });
     // Render gratuito: o primeiro acesso depois de um tempo parado leva ~1 min. O socket.io
@@ -683,26 +908,30 @@
     renderRail(); renderSidebar(); renderMain(); renderMembers(); renderUserPanel(); renderVoicePanel();
   }
 
+  /** Barra superior: logo + comunidades em pills (substitui a coluna de bolinhas). */
   function renderRail() {
     const serverUnread = (s) => s.channels.some((c) => S.unread.has(c.id));
     $('#rail').innerHTML = `
-      <div class="rail-logo" title="Cinecria Beta">${logo()}<span class="beta-badge mini">Beta</span></div>
-      <div class="rail-sep"></div>
-      ${[...S.servers.values()].map((s) => `
-        <button class="rail-item ${s.id === S.activeServerId ? 'active' : ''} ${serverUnread(s) ? 'unread' : ''}" data-server="${s.id}" style="--c:${s.color}" data-tip="${esc(s.name)}">
-          <span class="pill"></span>
-          <span class="srv-ico">${esc(initials(s.name))}</span>
-          ${S.voice?.serverId === s.id ? `<span class="rail-voice">${icon('volume')}</span>` : ''}
-          ${s.channels.some((c) => S.mentions.has(c.id)) ? '<span class="rail-ping">@</span>' : ''}
-        </button>`).join('')}
-      <div class="rail-sep"></div>
-      <button class="rail-item add" data-action="create-server" data-tip="Criar servidor">${icon('plus')}</button>
-      <button class="rail-item add" data-action="join-server" data-tip="Entrar com convite">${icon('link')}</button>`;
+      <div class="tb-brand" title="Cinecria Beta">${logo()}<span class="tb-name">Cinecria</span><span class="beta-badge">Beta</span></div>
+      <nav class="tb-pills" aria-label="Comunidades">
+        ${[...S.servers.values()].map((s) => `
+          <button class="tb-pill ${s.id === S.activeServerId ? 'active' : ''} ${serverUnread(s) ? 'unread' : ''}" data-server="${s.id}" style="--c:${s.color}" title="${esc(s.name)}">
+            <span class="tb-ico">${esc(initials(s.name))}</span>
+            <span class="tb-label">${esc(s.name)}</span>
+            ${s.isPublic ? `<span class="tb-off" title="Servidor oficial">${icon('shield')}</span>` : ''}
+            ${S.voice?.serverId === s.id ? `<span class="tb-voice" title="Você está numa sala aqui">${icon('volume')}</span>` : ''}
+            ${s.channels.some((c) => S.mentions.has(c.id)) ? '<span class="tb-ping">@</span>' : serverUnread(s) ? '<span class="tb-dot"></span>' : ''}
+          </button>`).join('')}
+      </nav>
+      <div class="tb-actions">
+        <button class="tb-btn" data-action="create-server" title="Criar comunidade">${icon('plus')}<span>Criar</span></button>
+        <button class="tb-btn" data-action="join-server" title="Entrar com convite">${icon('link')}<span>Convite</span></button>
+      </div>`;
   }
 
   function vcMember(m) {
     const st = m.state || {};
-    return `<div class="vcm ${S.speaking.has(m.id) ? 'speaking' : ''}" data-user="${m.id}" data-vol-user="${m.id}">
+    return `<div class="vcm ${S.speaking.has(m.id) ? 'speaking' : ''}" data-user="${m.id}" data-vol-user="${m.id}" data-profile="${m.id}">
       ${avatar(m, 'xs')}<span class="nm">${esc(m.name)}</span>
       <span class="vcm-icons">
         ${volBadge(m)}
@@ -715,22 +944,33 @@
   function renderSidebar() {
     const srv = activeServer();
     if (!srv) return;
+    const online = srv.members.length, inRooms = srv.members.filter((m) => m.voice).length;
     $('#srvHeader').innerHTML = `<button class="srv-header" data-action="server-menu">
-      <span class="srv-title">${esc(srv.name)}</span>${srv.isPublic ? '<span class="pub">PÚBLICO</span>' : ''}${icon('chevron')}</button>`;
+      <span class="srv-head-txt"><span class="srv-title">${esc(srv.name)}</span>
+        <small>${srv.isPublic ? `${icon('shield')}Oficial · ` : ''}${online} online${inRooms ? ` · ${inRooms} em salas` : ''}</small></span>${icon('chevron')}</button>`;
     const cur = textChannel(srv);
-    const cat = (label, type) => `<div class="cat"><span>${label}</span><button class="cat-add" data-action="create-channel" data-type="${type}" title="Criar canal">${icon('plus')}</button></div>`;
+    // servidores públicos oficiais: ninguém cria/edita salas (o servidor também recusa)
+    const cat = (label, type) => `<div class="cat"><span>${label}</span>${srv.isPublic ? '' : `<button class="cat-add" data-action="create-channel" data-type="${type}" title="Criar ${type === 'voice' ? 'sala' : 'canal'}">${icon('plus')}</button>`}</div>`;
     const text = srv.channels.filter((c) => c.type === 'text').map((c) => `
       <button class="ch ${S.view === 'text' && cur?.id === c.id ? 'active' : ''} ${S.unread.has(c.id) ? 'unread' : ''}" data-channel="${c.id}" data-type="text">
         ${icon('hash')}<span class="ch-name">${esc(c.name)}</span>${S.mentions.has(c.id) ? `<span class="ping" title="Mencionaram você">${icon('at')}</span>` : ''}</button>`).join('');
     const voice = srv.channels.filter((c) => c.type === 'voice').map((c) => {
       const ms = srv.members.filter((m) => m.voice?.channelId === c.id);
       const connected = S.voice?.channelId === c.id;
-      const live = ms.some((m) => m.state?.screen);
-      return `<button class="ch voice ${live ? 'is-live' : ''} ${connected ? 'connected' : ''} ${connected && S.view === 'voice' ? 'active' : ''}" data-channel="${c.id}" data-type="voice">
-          ${icon('volume')}<span class="ch-name">${esc(c.name)}</span>${live ? '<span class="now-showing">EM CARTAZ</span>' : ''}${S.mentions.has(c.id) ? `<span class="ping" title="Mencionaram você no chat da sala">${icon('at')}</span>` : ''}${ms.length ? `<em class="count">${ms.length}</em>` : ''}</button>
-        <div class="vc-members">${ms.map(vcMember).join('')}</div>`;
+      const live = ms.filter((m) => m.state?.screen);
+      const stack = ms.slice(0, 4).map((m) => `<img class="room-av" src="${esc(avatarSrc(m))}" data-n="${esc(m.name)}" data-profile="${m.id}" title="${esc(m.name)}" alt="">`).join('');
+      return `<button class="room ${live.length ? 'is-live' : ''} ${connected ? 'connected' : ''} ${connected && S.view === 'voice' ? 'active' : ''} ${ms.length ? '' : 'empty'}" data-channel="${c.id}" data-type="voice">
+          <span class="room-top"><span class="room-ico">${icon(live.length ? 'film' : 'volume')}</span><span class="room-name">${esc(c.name)}</span>
+            ${S.mentions.has(c.id) ? `<span class="ping" title="Mencionaram você no chat da sala">${icon('at')}</span>` : ''}
+            ${live.length ? '<span class="live-badge">AO VIVO</span>' : ''}</span>
+          <span class="room-meta">${ms.length
+            ? `<span class="room-stack">${stack}${ms.length > 4 ? `<em>+${ms.length - 4}</em>` : ''}</span><span class="room-count">${icon('users')}${ms.length}</span>`
+            : '<span class="room-empty">Sala vazia · entre e dê o play</span>'}
+            ${live.length ? `<span class="room-live">${icon('screen')}${esc(live[0].name)}${live.length > 1 ? ` +${live.length - 1}` : ''}</span>` : ''}</span>
+        </button>
+        ${connected ? `<div class="vc-members">${ms.map(vcMember).join('')}</div>` : ''}`;
     }).join('');
-    $('#channels').innerHTML = cat('Chat', 'text') + text + cat('Salas de exibição', 'voice') + voice;
+    $('#channels').innerHTML = cat('Bate-papo', 'text') + `<div class="ch-list">${text}</div>` + cat('Salas de exibição', 'voice') + `<div class="room-list">${voice}</div>`;
   }
 
   function renderVoicePanel() {
@@ -773,7 +1013,7 @@
       const vc = m.voice && S.servers.get(m.voice.serverId)?.channels.find((c) => c.id === m.voice.channelId);
       const sub = m.state?.screen ? `<small class="live-txt">${icon('screen')}Transmitindo em ${esc(vc?.name || '')}</small>`
         : vc ? `<small>${icon('volume')}${esc(vc.name)}</small>` : '';
-      return `<div class="mem ${m.id === S.me.id ? 'me' : ''}" data-user="${m.id}" data-vol-user="${m.id}">
+      return `<div class="mem ${m.id === S.me.id ? 'me' : ''}" data-user="${m.id}" data-vol-user="${m.id}" data-profile="${m.id}">
         <span class="av-wrap">${avatar(m, 'sm')}<span class="status-dot"></span></span>
         <span class="mem-names"><b style="color:${nameColor(m.name)}">${esc(m.name)}</b>${sub}</span></div>`;
     }).join('');
@@ -894,6 +1134,7 @@
           <div class="sh-left"><button class="icon-btn mobile-only" data-action="drawer" title="Menu">${icon('menu')}</button>${icon('volume', 'muted')}<b id="stageTitle"></b><span id="stageLive" class="sh-live"></span></div>
           <div class="sh-right">
             <span id="stageQuality"></span>
+            <button class="icon-btn lights-btn" data-action="lights" title="Luzes de cinema (ambilight)">${icon('bulb')}<span>Luzes</span></button>
             <button class="icon-btn" data-action="layout" data-layout="grid" title="Grade">${icon('grid')}</button>
             <button class="icon-btn" data-action="layout" data-layout="focus" title="Foco na transmissão">${icon('focus')}</button>
             <button class="icon-btn" data-action="open-text" title="Ir para os canais de texto">${icon('hash')}</button>
@@ -901,7 +1142,7 @@
           </div>
         </header>
         <div class="stage-body" id="stageBody">
-          <div class="focus-main" id="focusMain"></div>
+          <div class="focus-main" id="focusMain"><canvas class="amb-glow" id="ambGlow" width="16" height="9" aria-hidden="true"></canvas></div>
           <div class="tiles" id="tiles"></div>
         </div>
         <div class="controls" id="controls"></div>
@@ -947,13 +1188,15 @@
       <div class="tile-name"></div>
       ${CAN_PIP ? `<button class="tile-pip" title="Janela flutuante (Picture-in-Picture)">${icon('pip')}</button>` : ''}
       <div class="tile-pipped">${icon('pip')}<span>Em janela flutuante</span></div>
-      <div class="tile-prevoff">${icon('eyeOff')}<b>Você está ao vivo</b><span>Prévia oculta para poupar sua GPU/CPU. Os amigos continuam vendo normalmente.</span></div>
+      <div class="tile-prevoff">${icon('eyeOff')}<b>Você está transmitindo ao vivo</b><span>A prévia fica desligada para o seu PC rodar o filme/jogo liso.</span><em>Clique para ver a prévia</em></div>
       ${t.kind === 'screen' ? `<button class="tile-info" title="Estatísticas da transmissão">${icon('info')}</button><div class="tile-stats"></div>` : ''}
       ${t.kind === 'screen' && t.m.id === S.me?.id ? `<button class="tile-eye" title="Ocultar/mostrar minha prévia"></button>` : ''}
       <button class="tile-chat" title="Chat da sala">${icon('chat')}<span class="cc-badge" data-cc-badge></span></button>
       <button class="tile-fs" title="Tela cheia">${icon('maximize')}</button>`;
     el.addEventListener('click', (e) => {
       if (e.target.closest('.tile-stats')) return;
+      if (el.classList.contains('preview-off') && e.target.closest('.tile-prevoff')) return toggleOwnPreview();
+      if (e.target.closest('.tile-name')) { const r = e.target.closest('.tile-name').getBoundingClientRect(); return openProfile(t.m.id, r); }
       if (e.target.closest('.tile-info')) return toggleStats(t.key);
       if (e.target.closest('.tile-eye')) return toggleOwnPreview();
       if (e.target.closest('.tile-chat')) return setCallChat(!S.callOpen);
@@ -961,10 +1204,8 @@
       if (e.target.closest('.tile-fs')) return toggleFullscreen(el);
       if (el.classList.contains('pseudo-fs')) return;
       // celular: tocar no perfil de alguém abre o volume individual
-      if (isMobile() && t.kind === 'user' && t.m.id !== S.me?.id) {
-        const r = el.getBoundingClientRect();
-        return openVolumeMenu(t.m.id, r.left + r.width / 2, r.top + r.height / 2);
-      }
+      // celular: tocar no perfil de alguém abre o card de perfil (com o volume individual)
+      if (isMobile() && t.kind === 'user') return openProfile(t.m.id, el.getBoundingClientRect());
       // espera um instante: se vier o 2º clique (duplo clique = tela cheia), não troca o foco
       clearTimeout(el._clickT);
       el._clickT = setTimeout(() => {
@@ -1032,6 +1273,8 @@
     if (S.layout === 'focus') focused = tiles.find((t) => t.key === S.focusKey) || screens[0] || null;
     $('#stage').classList.toggle('is-focus', !!focused);
     ambient(focused?.kind === 'screen');
+    $('.lights-btn')?.classList.toggle('on', S.lights);
+    $('.lights-btn')?.classList.toggle('hidden', !screens.length);
 
     const box = $('#tiles'), fm = $('#focusMain'), keep = new Set();
     for (const t of tiles) {
@@ -1039,9 +1282,9 @@
       let el = S.tileEls.get(t.key);
       if (!el) { el = createTile(t); S.tileEls.set(t.key, el); }
       updateTile(el, t);
-      if (t === focused && el.parentElement !== fm) fm.replaceChildren(el);
+      if (t === focused && el.parentElement !== fm) { [...fm.children].forEach((c) => c.id !== 'ambGlow' && c.remove()); fm.appendChild(el); }
     }
-    if (!focused) fm.replaceChildren();
+    if (!focused) [...fm.children].forEach((c) => c.id !== 'ambGlow' && c.remove());
     tiles.filter((t) => t !== focused).forEach((t, i) => {
       const el = S.tileEls.get(t.key);
       if (box.children[i] !== el) box.insertBefore(el, box.children[i] || null);
@@ -1198,7 +1441,33 @@
     if (render) renderAll();
   }
 
+  /** Bipe curto só para você (sai pelos seus fones; não vai para a sala). */
+  function tones(freqs, { type = 'sine', gain = 0.075, gap = 0.085, dur = 0.07 } = {}) {
+    try {
+      sfxCtx ||= new AudioContext();
+      if (sfxCtx.state === 'suspended') sfxCtx.resume();
+      const t0 = sfxCtx.currentTime + 0.01;
+      freqs.forEach((f, i) => {
+        const o = sfxCtx.createOscillator(), g = sfxCtx.createGain(), t = t0 + i * gap;
+        o.type = type;
+        o.frequency.setValueAtTime(f, t);
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(gain, t + 0.008);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g).connect(sfxCtx.destination);
+        o.start(t); o.stop(t + dur + 0.02);
+      });
+    } catch {}
+  }
+  const toggleSfx = {
+    unmute: () => tones([587, 880]),                              // sobe: microfone ligado
+    mute: () => tones([466, 311], { type: 'triangle' }),          // desce, mais grave
+    undeafen: () => tones([392, 587, 784], { gap: 0.07 }),
+    deafen: () => tones([523, 349, 233], { type: 'triangle', gap: 0.07 }),
+  };
+
   function setMute(muted) {
+    (muted ? toggleSfx.mute : toggleSfx.unmute)();
     S.muted = muted;
     if (!muted && S.deafened) S.deafened = false; // reativar mic também reativa o áudio
     LS.set('muted', S.muted); LS.set('deafened', S.deafened);
@@ -1209,6 +1478,7 @@
   }
 
   function setDeafen(deafened) {
+    (deafened ? toggleSfx.deafen : toggleSfx.undeafen)();
     S.deafened = deafened;
     LS.set('deafened', S.deafened);
     S.voice?.setDeafened(S.deafened);
@@ -1373,6 +1643,7 @@
   }
 
   function createChannelModal(type) {
+    if (activeServer()?.isPublic) return toast('Não é permitido criar ou editar salas nos servidores públicos oficiais do Cinecria.', 'err');
     const srv = activeServer();
     const m = openModal(`
       <div class="modal-head"><h2>Criar canal</h2><button class="icon-btn" data-close>${icon('x')}</button></div>
@@ -1401,18 +1672,15 @@
         <div class="avatar-side">
           <span class="label">Foto de perfil</span>
           <div class="presets"></div>
-          <div class="av-actions">
-            <button class="btn ghost sm av-upload" type="button">${icon('folder')}Enviar do dispositivo</button>
-            <button class="btn ghost sm av-gif" type="button">${icon('sparkles')}Buscar GIF</button>
-          </div>
-          <small class="av-hint">PNG, JPG, WebP ou <b>GIF animado</b> · até 2 MB</small>
+          ${AV_ACTIONS_HTML}
           <input type="file" class="av-file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
         </div>
       </div>
-      <label class="field"><span class="label">Apelido</span><input id="pfName" maxlength="32" value="${esc(S.me.name)}"></label>
+      <label class="field"><span class="label">Apelido</span><input id="pfName" maxlength="32" value="${esc(S.me.name)}"><small class="field-err" id="pfErr"></small></label>
       <p class="hint srv-line">${icon('lock')}Conectado a <b>${esc(new URL(profile.serverUrl).host)}</b></p>
       <div class="modal-foot"><button class="btn danger-ghost" id="pfOut">${icon('logout')}Sair</button><div class="spacer"></div><button class="btn ghost" data-close>Cancelar</button><button class="btn primary" id="pfSave">Salvar</button></div>`);
     const picker = setupAvatarPicker($('#pfAvatar', m), $('#pfName', m), profile);
+    $('#pfName', m).addEventListener('input', () => { $('#pfName', m).classList.remove('invalid'); $('#pfErr', m).textContent = ''; });
     $('#pfSave', m).addEventListener('click', async () => {
       const name = $('#pfName', m).value.trim();
       if (!name) return toast('O apelido não pode ficar vazio.', 'err');
@@ -1421,7 +1689,10 @@
       const avatar = picker.value();
       const res = await req('profile:update', { name, avatar });
       btn.disabled = false; btn.textContent = 'Salvar';
-      if (res.error) return toast(res.error, 'err');
+      if (res.error) {
+        if (res.code === 'name_taken') { $('#pfName', m).classList.add('invalid'); $('#pfName', m).focus(); $('#pfErr', m).textContent = res.error; }
+        return toast(res.error, 'err');
+      }
       Object.assign(profile, picker.state(), { name });
       saveProfile();
       S.avatarData = avatar;
@@ -1453,11 +1724,13 @@
     'copy-invite': () => copyInvite(),
     'server-menu': (el) => {
       const srv = activeServer();
-      openMenu(el, [
+      openMenu(el, srv.isPublic ? [
+        { label: `Copiar convite (${srv.invite})`, icon: 'copy', run: () => copyInvite(srv) },
+      ] : [
         { label: `Copiar convite (${srv.invite})`, icon: 'copy', run: () => copyInvite(srv) },
         { label: 'Criar canal de texto', icon: 'hash', run: () => createChannelModal('text') },
-        { label: 'Criar canal de voz', icon: 'volume', run: () => createChannelModal('voice') },
-        ...(srv.isPublic ? [] : ['-', { label: 'Sair do servidor', icon: 'logout', danger: true, run: () => leaveServer(srv) }]),
+        { label: 'Criar sala de exibição', icon: 'volume', run: () => createChannelModal('voice') },
+        '-', { label: 'Sair do servidor', icon: 'logout', danger: true, run: () => leaveServer(srv) },
       ]);
     },
     'toggle-mute': () => setMute(!S.muted),
@@ -1482,6 +1755,7 @@
     profile: profileModal,
     attach: () => $('#fileInput')?.click(),
     'call-chat': () => setCallChat(!S.callOpen),
+    lights: () => toggleLights(),
     emoji: () => toggleEmoji(),
     lightbox: (el) => openLightbox(el.dataset.src),
     'unstage': (el) => unstage(el.dataset.id),
@@ -1500,6 +1774,13 @@
   document.addEventListener('click', (e) => {
     const a = e.target.closest('[data-action]');
     if (a && actions[a.dataset.action]) { e.preventDefault(); actions[a.dataset.action](a); return; }
+
+    const pf = e.target.closest('[data-profile]');
+    if (pf && S.me) {
+      e.preventDefault();
+      openProfile(pf.dataset.profile, pf.getBoundingClientRect(), pf.dataset.pname ? { name: pf.dataset.pname, avatar: pf.dataset.pav || null } : null);
+      return;
+    }
 
     const sv = e.target.closest('[data-server]');
     if (sv) {
@@ -1708,8 +1989,9 @@
       + (m.attachment ? attachmentHTML(m.attachment) : '');
     const ping = m.author.id !== S.me?.id && mentionsMe(m.text) ? ' mentioned' : '';
     if (grouped) return `<div class="msg cont${ping}"><span class="ts-side">${time}</span><div class="msg-main">${body}</div></div>`;
-    return `<div class="msg${ping}">${avatar(m.author, 'md')}<div class="msg-main">
-      <div class="meta"><b style="color:${nameColor(m.author.name)}">${esc(m.author.name)}</b><span class="ts">${fmtTime(m.ts)}</span></div>
+    const pf = `data-profile="${esc(m.author.id)}" data-pname="${esc(m.author.name)}" data-pav="${esc(m.author.avatar || '')}"`;
+    return `<div class="msg${ping}"><span class="msg-av" ${pf}>${avatar(m.author, 'md')}</span><div class="msg-main">
+      <div class="meta"><b class="msg-name" ${pf} style="color:${nameColor(m.author.name)}">${esc(m.author.name)}</b><span class="ts">${fmtTime(m.ts)}</span></div>
       ${body}</div></div>`;
   }
 
@@ -1905,7 +2187,7 @@
     document.body.appendChild(l);
   }
 
-  const closePopovers = () => closeGifPicker() || closeMentions() || closeVolMenu() || closeEmoji() || closeLightbox();
+  const closePopovers = () => closeGifPicker() || closeProfile() || closeMentions() || closeVolMenu() || closeEmoji() || closeLightbox();
 
   /* ================================ menções ================================ */
   // "@Bia Ramos" — nomes podem ter espaços, então a menção é reconhecida contra a lista de nomes conhecidos.
@@ -2269,7 +2551,7 @@
   function toggleOwnPreview() {
     S.hideOwnPreview = !S.hideOwnPreview;
     LS.set('hideOwnPreview', S.hideOwnPreview);
-    toast(S.hideOwnPreview ? 'Prévia oculta — sua transmissão continua normal para todos.' : 'Prévia visível de novo.');
+    toast(S.hideOwnPreview ? 'Prévia desligada — sua transmissão continua normal para todos.' : 'Prévia ligada (usa mais GPU/CPU enquanto você transmite).');
     updateStage();
   }
 
@@ -2346,33 +2628,120 @@
     document.body.appendChild(b);
   }
 
-  /* ================== luz ambiente da transmissão ("ambilight") ================== */
-  // A cor média da tela em foco tinge o palco — efeito de sala escura iluminada pelo filme.
-  let ambTimer = null;
-  const ambCanvas = document.createElement('canvas');
-  ambCanvas.width = 24; ambCanvas.height = 14;
-  const ambCtx = ambCanvas.getContext('2d', { willReadFrequently: true });
+  /* ==================== Luzes de cinema (ambilight) ==================== */
+  // O vídeo em foco é desenhado num canvas de 16×9 px a ~8 FPS; o CSS amplia e desfoca na GPU.
+  // Sem getImageData (nada de ler pixels de volta para a CPU). Pausa com a janela escondida.
+  let ambTimer = null, ambOn = false;
   function ambient(on) {
-    if (!on) {
-      clearInterval(ambTimer); ambTimer = null;
-      $('#stage')?.style.removeProperty('--amb');
-      return;
-    }
+    ambOn = !!on && S.lights;
+    const st = $('#stage');
+    st?.classList.toggle('lights-off', ambOn);
+    document.documentElement.classList.toggle('cinema-dim', ambOn);
+    if (!ambOn || document.hidden) { clearInterval(ambTimer); ambTimer = null; return; }
     if (ambTimer) return;
     ambTimer = setInterval(() => {
-      const st = $('#stage');
-      if (!st) return ambient(false);
-      const v = $('#focusMain .tile.has-video video');
+      const c = $('#ambGlow'), v = $('#focusMain .tile.has-video video');
+      if (!c || !$('#stage')) return ambient(false);
       if (!v || v.readyState < 2) return;
-      try {
-        ambCtx.drawImage(v, 0, 0, 24, 14);
-        const d = ambCtx.getImageData(0, 0, 24, 14).data;
-        let r = 0, g = 0, b = 0;
-        for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; }
-        const n = d.length / 4, k = (c) => Math.min(255, Math.round((c / n) * 1.35 + 8));
-        st.style.setProperty('--amb', `rgb(${k(r)} ${k(g)} ${k(b)})`);
-      } catch {}
-    }, 350);
+      try { c.getContext('2d').drawImage(v, 0, 0, 16, 9); } catch {}
+    }, CFG.ambilight?.intervalMs || 120);
+  }
+  document.addEventListener('visibilitychange', () => { if (S.view === 'voice') ambient($('#stage')?.classList.contains('is-focus') && $('#focusMain .tile.screen')); });
+  function toggleLights() {
+    S.lights = !S.lights;
+    LS.set('ambilight', S.lights);
+    toast(S.lights ? 'Luzes de cinema: ligadas' : 'Luzes de cinema: desligadas');
+    if (S.view === 'voice') updateStage();
+  }
+
+  /* ============================== perfil dos usuários ============================== */
+  function closeProfile() { const p = $('.pf-pop'); $('.pf-back')?.remove(); if (!p) return false; p.remove(); return true; }
+  const hm = (ts) => new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  function since(ts) {
+    const min = Math.round((Date.now() - ts) / 60e3);
+    if (min < 1) return 'agora';
+    if (min < 60) return `há ${min} min`;
+    const h = Math.floor(min / 60);
+    return `há ${h} h${min % 60 ? ` ${min % 60} min` : ''}`;
+  }
+  function openProfile(id, rect, offline = null) {
+    closeProfile(); closeVolMenu(); closeMenu();
+    const m = findMember(id) || (offline && { id, name: offline.name, avatar: offline.avatar, offline: true });
+    if (!m) return;
+    const isMe = m.id === S.me?.id;
+    const st = m.state || {};
+    const vc = m.voice && channelById(m.voice.channelId);
+    const sameCall = !!S.voice && m.voice?.channelId === S.voice.channelId;
+    const h = hue(m.name);
+    const rows = [];
+    if (m.offline) rows.push(`<span class="pf-row off">${icon('door')}<span>Offline agora</span></span>`);
+    else rows.push(`<span class="pf-row ok"><i class="pf-dot"></i><span>Online${m.since ? ` · entrou às ${hm(m.since)} (${since(m.since)})` : ''}</span></span>`);
+    if (vc) rows.push(`<span class="pf-row">${icon('volume')}<span>Em chamada na <b>${esc(vc.name)}</b>${m.voiceSince ? ` · desde ${hm(m.voiceSince)}` : ''}</span></span>`);
+    if (st.screen) rows.push(`<span class="pf-row live">${icon('screen')}<span>Transmitindo a tela${st.quality ? ` · ${esc(st.quality)}` : ''}</span></span>`);
+    if (st.camera) rows.push(`<span class="pf-row">${icon('camera')}<span>Câmera ligada</span></span>`);
+    if (vc && st.deafened) rows.push(`<span class="pf-row bad">${icon('headOff')}<span>Áudio desativado</span></span>`);
+    else if (vc && st.muted) rows.push(`<span class="pf-row bad">${icon('micOff')}<span>Microfone mutado</span></span>`);
+    const v = !isMe && volOf(m);
+    if (v && (v.muted || (v.voice ?? 1) !== 1)) rows.push(`<span class="pf-row">${icon('vol')}<span>Volume para você: ${v.muted ? 'silenciado' : Math.round(v.voice * 100) + '%'}</span></span>`);
+
+    const pop = document.createElement('div');
+    pop.className = 'pf-pop';
+    pop.setAttribute('role', 'dialog');
+    pop.style.setProperty('--h1', h);
+    pop.style.setProperty('--h2', (h + 50) % 360);
+    pop.innerHTML = `
+      <div class="pf-banner"></div>
+      <div class="pf-av ${S.speaking.has(m.id) ? 'speaking' : ''}"><img src="${esc(avatarSrc(m))}" data-n="${esc(m.name)}" alt=""></div>
+      <div class="pf-body">
+        <div class="pf-name"><b>${esc(m.name)}</b>${isMe ? '<span class="pf-you">você</span>' : ''}</div>
+        <div class="pf-rows">${rows.join('')}</div>
+        <div class="pf-actions">
+          ${isMe ? `<button class="btn primary sm" data-pf="edit">${icon('gear')}Editar perfil</button>`
+            : `<button class="btn primary sm" data-pf="mention" ${m.offline ? '' : ''}>${icon('at')}Mencionar no chat</button>
+               ${sameCall ? `<button class="btn ghost sm" data-pf="vol">${icon('vol')}Volume</button>` : ''}`}
+        </div>
+      </div>`;
+    if (isMobile()) {
+      const back = document.createElement('div');
+      back.className = 'pf-back';
+      back.addEventListener('click', closeProfile);
+      document.body.appendChild(back);
+      pop.classList.add('sheet');
+    }
+    document.body.appendChild(pop);
+    if (!isMobile() && rect) {
+      const r = pop.getBoundingClientRect();
+      let x = rect.right + 10, y = rect.top;
+      if (x + r.width > innerWidth - 12) x = rect.left - r.width - 10;           // não cabe à direita → esquerda
+      if (x < 12) x = Math.min(innerWidth - r.width - 12, Math.max(12, rect.left)); // nem à esquerda → embaixo
+      pop.style.left = x + 'px';
+      pop.style.top = Math.max(12, Math.min(y, innerHeight - r.height - 12)) + 'px';
+    }
+    pop.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-pf]');
+      if (!b) return;
+      const act = b.dataset.pf;
+      closeProfile();
+      if (act === 'edit') return profileModal();
+      if (act === 'mention') return insertMention(m.name);
+      if (act === 'vol') { const r = b.getBoundingClientRect(); return openVolumeMenu(m.id, r.left, r.top); }
+    });
+    setTimeout(() => document.addEventListener('pointerdown', function h(ev) {
+      if (!document.body.contains(pop)) return document.removeEventListener('pointerdown', h, true);
+      if (!pop.contains(ev.target) && !ev.target.closest('.pf-back')) { closeProfile(); document.removeEventListener('pointerdown', h, true); }
+    }, true), 0);
+  }
+  /** "@nome " no campo de mensagem visível (chat do canal ou chat da sala). */
+  function insertMention(name) {
+    if (S.view === 'voice' && S.voice && !S.callOpen) setCallChat(true, { focus: false });
+    if (S.view !== 'voice' && !$('#msgInput')) { S.view = 'text'; renderAll(); }
+    const input = $('#msgInput');
+    if (!input) return;
+    const ins = '@' + name + ' ';
+    const pos = input.selectionStart ?? input.value.length;
+    const pre = input.value.slice(0, pos);
+    input.setRangeText((pre && !/\s$/.test(pre) ? ' ' : '') + ins, pos, input.selectionEnd ?? pos, 'end');
+    setTimeout(() => input.focus(), 60);
   }
 
   /* ============================ gaveta (mobile) ============================ */

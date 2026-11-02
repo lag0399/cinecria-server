@@ -7,6 +7,9 @@
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; img-src 'self' data: blob: http: https:; media-src 'self' blob: mediastream: http: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src * ws: wss: http: https:;" />
   <title>Cinecria Beta</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+  <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
   <link rel="stylesheet" href="styles.css" />
   <!-- socket.io client: do node_modules (Electron) com fallback para o servidor (modo navegador) -->
   <script src="../node_modules/socket.io-client/dist/socket.io.min.js"></script>
@@ -31,11 +34,15 @@
         <button class="avatar-big" type="button" title="Trocar foto"><img alt="" /><span class="av-edit">Trocar</span></button>
         <div class="avatar-side">
           <div class="presets"></div>
-          <div class="av-actions">
-            <button class="btn ghost sm av-upload" type="button"><span class="av-act-ico" data-ico="folder"></span>Enviar do dispositivo</button>
-            <button class="btn ghost sm av-gif" type="button"><span class="av-act-ico" data-ico="sparkles"></span>Buscar GIF</button>
+          <div class="av-cards">
+            <button class="av-card up-card av-upload" type="button">
+              <span class="up-ico" data-ico="folder"></span><b>Enviar do dispositivo</b><small>PNG, JPG, WebP ou GIF</small>
+            </button>
+            <button class="av-card gif-card av-gif" type="button">
+              <span class="gif-mosaic"><i></i><i></i><i></i><i></i></span>
+              <span class="gif-card-label"><span class="gif-chip">GIF</span><b><span data-ico="sparkles"></span>Escolher GIF</b></span>
+            </button>
           </div>
-          <small class="av-hint">PNG, JPG, WebP ou <b>GIF animado</b> · até 2 MB</small>
           <input type="file" class="av-file" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
         </div>
       </div>
@@ -43,6 +50,7 @@
       <label class="field">
         <span class="label">Apelido</span>
         <input id="nick" maxlength="32" placeholder="Como seus amigos vão te ver" autocomplete="off" spellcheck="false" />
+        <small class="field-hint">Único entre quem está online agora.</small>
       </label>
 
       <div class="srv-lock" id="srvLock">
@@ -68,7 +76,7 @@
 
   <!-- ============ Interface principal ============ -->
   <div id="app" class="app hidden">
-    <nav id="rail" class="rail"></nav>
+    <header id="rail" class="topbar"></header>
     <aside class="sidebar">
       <div id="srvHeader"></div>
       <div id="channels" class="channels"></div>

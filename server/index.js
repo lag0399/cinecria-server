@@ -40,6 +40,13 @@ app.use(express.static(path.join(__dirname, '..', 'app', 'renderer')));
 // CORS: o app Electron (file://) e o Android (https://localhost) consultam estas rotas.
 app.use(['/health', '/avatar'], (_req, res, next) => { res.set('Access-Control-Allow-Origin', '*'); next(); });
 app.get('/health', (_req, res) => res.json({ app: 'cinecria-server', ok: true }));
+// Chaves das APIs de GIF definidas no Render (Environment → KLIPY_API_KEY / GIPHY_API_KEY).
+// São chaves de CLIENTE: GIPHY e KLIPY exigem que a busca saia do app do usuário, então elas
+// chegam ao navegador de qualquer forma — assim dá para trocar a chave sem gerar outro .exe.
+app.use('/api/client-config', (_req, res, next) => { res.set('Access-Control-Allow-Origin', '*'); next(); });
+app.get('/api/client-config', (_req, res) => res.json({
+  gif: { klipyKey: process.env.KLIPY_API_KEY || '', giphyKey: process.env.GIPHY_API_KEY || '' },
+}));
 
 /* ------------------------------ Avatares ------------------------------ */
 // O avatar NÃO vai dentro das atualizações de presença: um GIF de 2 MB repetido a cada
@@ -49,7 +56,8 @@ const MAX_AVATAR_DATAURL = 2_900_000;                // base64 de 2 MB ≈ 2,8 m
 const AVATAR_CACHE_BYTES = (Number(process.env.AVATAR_CACHE_MB) || 200) * 1024 * 1024;
 /** @type {Map<string, { mime: string, buf: Buffer }>} */ const avatars = new Map();
 let avatarBytes = 0;
-const REMOTE_AVATAR_HOST = /^(media\d*\.giphy\.com|i\.giphy\.com|media\d*\.tenor\.com|c\.tenor\.com)$/i;
+// GIF escolhido na busca: só links HTTPS dos CDNs de GIF (GIPHY, KLIPY, Tenor antigo).
+const REMOTE_AVATAR_HOST = /(^|\.)(giphy\.com|klipy\.com|klipycdn\.com|tenor\.com)$/i;
 
 /** Valida e normaliza o avatar enviado. Retorna o valor a guardar, null (padrão) ou undefined (inválido). */
 function normalizeAvatar(a) {
@@ -73,7 +81,7 @@ function normalizeAvatar(a) {
     }
     return `/avatar/${key}`;
   }
-  // GIF escolhido na busca (GIPHY; links antigos do Tenor também): guarda só o link HTTPS
+  // GIF escolhido na busca: guarda só o link HTTPS
   if (a.length > 600) return undefined;
   try {
     const u = new URL(a);
@@ -245,6 +253,11 @@ createServer({
     { name: 'Sala de Cinema', type: 'voice' },
     { name: 'Sessão da Tarde', type: 'voice' },
     { name: 'Jogatina', type: 'voice' },
+    { name: 'Terror da Madrugada', type: 'voice' },
+    { name: 'Clube do Anime', type: 'voice' },
+    { name: 'Pipoca & Série', type: 'voice' },
+    { name: 'Papear / Barzinho', type: 'voice' },
+    { name: 'Corujão VIP', type: 'voice' },
   ],
 });
 createServer({ name: 'Maratona de Séries', isPublic: true });
@@ -254,7 +267,18 @@ const defaultState = () => ({
   micStreamId: null, camStreamId: null, screenStreamId: null, quality: null,
 });
 
-const publicUser = (u) => ({ id: u.id, name: u.name, avatar: u.avatar, voice: u.voice, state: u.state });
+const publicUser = (u) => ({ id: u.id, name: u.name, avatar: u.avatar, voice: u.voice, state: u.state, since: u.since, voiceSince: u.voiceSince || null });
+
+/* ------------------------------ Apelidos únicos ------------------------------ */
+// "DVD", "dvd" e " dvd " são o mesmo apelido (sem diferenciar maiúsculas, acentos e espaços).
+const nameKey = (n) => String(n).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/\s+/g, ' ').trim();
+const NAME_TAKEN = 'Este apelido já está em uso por outra pessoa online. Escolha outro!';
+/** Quem está online com esse apelido (exceto `exceptId`). */
+function nameOwner(name, exceptId) {
+  const k = nameKey(name);
+  for (const u of users.values()) if (u.id !== exceptId && nameKey(u.name) === k) return u;
+  return null;
+}
 
 function snapshot(s) {
   return {
@@ -296,6 +320,7 @@ io.on('connection', (socket) => {
     socket.to(`vc:${channelId}`).emit('voice:peer-left', { peerId: user.id });
     const { muted, deafened } = user.state;
     user.voice = null;
+    user.voiceSince = null;
     user.state = { ...defaultState(), muted, deafened };
     broadcastServer(servers.get(serverId));
   }
@@ -305,10 +330,20 @@ io.on('connection', (socket) => {
     const name = cleanName(payload.name);
     if (!name) return reply({ error: 'Escolha um apelido.' });
     if (user) return reply({ error: 'Sessão já iniciada.' });
+    const resume = typeof payload.resume === 'string' && payload.resume.length >= 16 ? payload.resume.slice(0, 64) : null;
+    const owner = nameOwner(name);
+    if (owner) {
+      // Mesmo aparelho reconectando (queda de rede): a conexão antiga ainda não caiu por timeout.
+      // A chave "resume" é aleatória e só esse aparelho conhece — derruba a antiga e segue.
+      if (resume && owner.resume === resume) io.sockets.sockets.get(owner.id)?.disconnect(true);
+      else return reply({ error: NAME_TAKEN, code: 'name_taken' });
+    }
 
     user = {
       id: socket.id,
       name,
+      resume,
+      since: Date.now(),
       avatar: normalizeAvatar(payload.avatar) ?? null,
       servers: new Set(),
       voice: null,
@@ -330,12 +365,14 @@ io.on('connection', (socket) => {
   socket.on('profile:update', (payload = {}, cb) => {
     if (!user) return;
     const name = cleanName(payload.name);
-    if (name) user.name = name;
+    if (name && nameOwner(name, user.id)) return ack(cb)({ error: NAME_TAKEN, code: 'name_taken', me: publicUser(user) });
+    let av;
     if ('avatar' in payload) {
-      const av = normalizeAvatar(payload.avatar);
+      av = normalizeAvatar(payload.avatar);
       if (av === undefined) return ack(cb)({ error: 'Foto inválida ou maior que 2 MB.', me: publicUser(user) });
-      user.avatar = av;
     }
+    if (name) user.name = name;
+    if ('avatar' in payload) user.avatar = av;
     user.servers.forEach((id) => broadcastServer(servers.get(id)));
     ack(cb)({ me: publicUser(user) });
   });
@@ -371,6 +408,7 @@ io.on('connection', (socket) => {
   socket.on('channel:create', ({ serverId, name, type } = {}, cb) => {
     const s = servers.get(serverId);
     if (!user || !s || !s.members.has(user.id)) return ack(cb)({ error: 'Sem acesso.' });
+    if (s.isPublic) return ack(cb)({ error: 'Não é permitido criar ou editar salas nos servidores públicos oficiais do Cinecria.' });
     if (s.channels.length >= 50) return ack(cb)({ error: 'Limite de canais atingido.' });
     const t = type === 'voice' ? 'voice' : 'text';
     let n = String(name || '').trim().slice(0, 32);
@@ -435,6 +473,7 @@ io.on('connection', (socket) => {
     socket.to(`vc:${channelId}`).emit('voice:peer-joined', { peerId: user.id });
     socket.join(`vc:${channelId}`);
     user.voice = { serverId: s.id, channelId };
+    user.voiceSince = Date.now();
     broadcastServer(s);
     reply({ ok: true, peers });
   });

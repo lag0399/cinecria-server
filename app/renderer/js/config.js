@@ -21,11 +21,15 @@ window.CINECRIA_CONFIG = {
   defaultServerUrl: window.__CINECRIA_SERVER__,
   defaultPort: 3001,
 
-  // Busca de GIFs para a foto de perfil (GIPHY). A API do Tenor foi desligada pelo Google
-  // em 30/06/2026. Pegue uma chave grátis em https://developers.giphy.com/dashboard/
-  // (chave beta: 100 buscas/hora para TODO o app). Sem chave, o usuário ainda pode colar
-  // o link de um GIF do GIPHY.
-  gifApiKey: '',
+  // Busca de GIFs para a foto de perfil. A API do Tenor foi desligada pelo Google em 30/06/2026.
+  // Ordem de uso: KLIPY → GIPHY (se um falhar, o outro assume).
+  // O jeito mais fácil: defina KLIPY_API_KEY e/ou GIPHY_API_KEY nas variáveis de ambiente do
+  // Render — o app busca as chaves em /api/client-config (sem precisar gerar outro .exe).
+  // As chaves abaixo, se preenchidas, têm prioridade.
+  //   KLIPY: https://partner.klipy.com   ·   GIPHY: https://developers.giphy.com/dashboard/
+  klipyKey: '',
+  giphyKey: '',
+  gifApiKey: '', // nome antigo (1.4) = giphyKey
   gifRating: 'pg-13',
 
   // Foto de perfil: GIF animado é enviado como está (até 2 MB); outras imagens são recortadas.
@@ -44,17 +48,23 @@ window.CINECRIA_CONFIG = {
 
   // Perfis de qualidade do compartilhamento de tela.
   // bitrate = teto por espectador (no mesh, o upload total = bitrate × espectadores).
-  // É um TETO: o WebRTC sobe até ele conforme a rede aguenta (começa em ~4 Mbps, ver rtc.js).
+  // Tetos equilibrados para hardware comum (1.5). Quem tem PC forte e boa internet pode subir.
   screenPresets: {
-    '720p30':  { label: '720p 30FPS',  width: 1280, height: 720,  fps: 30, bitrate: 6_000_000 },
-    '1080p30': { label: '1080p 30FPS', width: 1920, height: 1080, fps: 30, bitrate: 10_000_000 },
-    '1080p60': { label: '1080p 60FPS', width: 1920, height: 1080, fps: 60, bitrate: 10_000_000 },
-    '1440p60': { label: '1440p 60FPS', width: 2560, height: 1440, fps: 60, bitrate: 16_000_000 },
-    'source':  { label: '★ Nativa 60FPS (Recomendado)', width: null, height: null, fps: 60, bitrate: 20_000_000 },
+    '720p30':  { label: '720p 30FPS',  width: 1280, height: 720,  fps: 30, bitrate: 2_500_000 },
+    '1080p30': { label: '1080p 30FPS', width: 1920, height: 1080, fps: 30, bitrate: 4_500_000 },
+    '1080p60': { label: '1080p 60FPS', width: 1920, height: 1080, fps: 60, bitrate: 4_500_000 },
+    '1440p60': { label: '1440p 60FPS', width: 2560, height: 1440, fps: 60, bitrate: 6_000_000 },
+    'source':  { label: '★ Nativa 60FPS (Recomendado)', width: null, height: null, fps: 60, bitrate: 6_000_000 },
   },
   // Sempre selecionado ao abrir "Compartilhar tela" (resolução original da tela, 60 FPS).
   defaultScreenPreset: 'source',
   recommendedScreenPreset: 'source',
 
   camera: { width: 1280, height: 720, fps: 30, bitrate: 2_500_000 },
+
+  // Quem transmite NÃO desenha a própria tela por padrão (economiza GPU/CPU); dá para ver
+  // a prévia clicando no card.
+  hideOwnPreviewByDefault: true,
+  // "Luzes de cinema": glow com as cores da cena atrás da transmissão + escurece o entorno.
+  ambilight: { enabled: true, intervalMs: 120 },
 };
