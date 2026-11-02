@@ -331,7 +331,8 @@ io.on('connection', (socket) => {
 
   socket.on('chat:send', ({ channelId, text, attachment } = {}) => {
     const { s, ch } = findChannel(channelId);
-    if (!user || !s || ch.type !== 'text' || !s.members.has(user.id)) return;
+    // canais de texto E de voz têm chat: cada sala de voz tem o seu "chat da sala"
+    if (!user || !s || !s.members.has(user.id)) return;
     const body = String(text || '').trim().slice(0, 2000);
     // anexo: só arquivos que ESTE usuário enviou e que ainda não foram usados
     let att = null;

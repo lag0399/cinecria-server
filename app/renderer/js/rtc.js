@@ -14,15 +14,65 @@
 (function () {
   const CFG = window.CINECRIA_CONFIG;
 
-  /** Habilita Opus estéreo e bitrate alto — essencial para áudio de filmes/jogos. */
-  function enableOpusStereo(sdp) {
+  /**
+   * Ajusta a SDP recebida do outro lado ANTES de aplicá-la. O Chrome lê os parâmetros de codec
+   * da descrição REMOTA para configurar o que ESTE lado envia, então cada participante ajusta
+   * o próprio envio:
+   *  - Opus estéreo 256 kbps (áudio de filmes/jogos);
+   *  - vídeo: x-google-start/min/max-bitrate. Sem isso o Chrome começa em ~300 kbps e sobe devagar
+   *    (os primeiros segundos ficam borrados) e, em várias versões, limita o vídeo a ~2,5 Mbps
+   *    mesmo com encodings[0].maxBitrate maior.
+   */
+  const VIDEO_KBPS = { start: 4000, min: 600, max: 20000 };
+  function tuneSdp(sdp) {
     const pts = [...sdp.matchAll(/a=rtpmap:(\d+) opus\/48000\/2/gi)].map((m) => m[1]);
     for (const pt of pts) {
       const re = new RegExp(`a=fmtp:${pt} ([^\\r\\n]*)`, 'g');
       sdp = sdp.replace(re, (line, params) =>
         params.includes('stereo=1') ? line : `a=fmtp:${pt} ${params};stereo=1;sprop-stereo=1;maxaveragebitrate=256000`);
     }
+    const g = `x-google-start-bitrate=${VIDEO_KBPS.start};x-google-min-bitrate=${VIDEO_KBPS.min};x-google-max-bitrate=${VIDEO_KBPS.max}`;
+    const vpts = [...sdp.matchAll(/a=rtpmap:(\d+) (VP8|VP9|H264|AV1)\/90000/gi)].map((m) => m[1]);
+    for (const pt of vpts) {
+      const fmtp = new RegExp(`a=fmtp:${pt} ([^\\r\\n]*)`);
+      if (fmtp.test(sdp)) {
+        sdp = sdp.replace(fmtp, (line, params) => (params.includes('x-google-') ? line : `${line};${g}`));
+      } else { // VP8 normalmente não tem linha fmtp — cria uma
+        sdp = sdp.replace(new RegExp(`(a=rtpmap:${pt} [^\\r\\n]*)(\\r?\\n)`), `$1$2a=fmtp:${pt} ${g}$2`);
+      }
+    }
     return sdp;
+  }
+
+  /**
+   * Ordem de codecs de vídeo: H.264 → VP9 → VP8 → resto.
+   * H.264 é o que tem encoder por hardware (NVENC/AMF/QuickSync via Media Foundation) no
+   * Chrome/Electron para Windows; VP9 rende mais qualidade por bit que o VP8 em telas.
+   * Se o outro lado não suportar, a negociação cai no próximo da lista — nada quebra.
+   */
+  function preferCodecs(pc, sender) {
+    try {
+      const tr = pc.getTransceivers().find((t) => t.sender === sender);
+      const caps = window.RTCRtpReceiver?.getCapabilities?.('video')?.codecs;
+      if (!tr?.setCodecPreferences || !caps?.length) return;
+      const rank = (c) => {
+        const m = c.mimeType.toLowerCase(), f = c.sdpFmtpLine || '';
+        if (m === 'video/h264') return /packetization-mode=1/.test(f) ? (/profile-level-id=42e0/i.test(f) ? 0 : 1) : 2;
+        if (m === 'video/vp9') return /profile-id=[1-3]/.test(f) ? 4 : 3;
+        if (m === 'video/vp8') return 5;
+        if (m === 'video/av1') return 6;
+        return 9; // rtx / red / ulpfec / flexfec ficam no fim, na ordem original
+      };
+      const sorted = caps.map((c, i) => ({ c, i })).sort((a, b) => rank(a.c) - rank(b.c) || a.i - b.i).map((x) => x.c);
+      tr.setCodecPreferences(sorted);
+    } catch (e) { console.warn('[rtc] codec prefs', e); }
+  }
+
+  /** Menor atraso possível no receptor (Chrome/Electron). Valor em ms; 0 = o mínimo que a rede permitir. */
+  function lowLatency(receiver) {
+    if (!receiver) return;
+    try { if ('jitterBufferTarget' in receiver) receiver.jitterBufferTarget = 0; } catch {}
+    try { receiver.playoutDelayHint = 0; } catch {} // nome antigo (Chrome < 123)
   }
 
   class Peer {
@@ -56,8 +106,11 @@
       pc.onsignalingstatechange = () => {
         if (pc.signalingState === 'stable') this.applyParams(); // encodings existem após negociar
       };
-      pc.ontrack = ({ track, streams }) => {
+      pc.ontrack = ({ track, streams, receiver }) => {
         const stream = streams[0] || new MediaStream([track]);
+        // vídeo: atraso mínimo já na chegada. Áudio da transmissão: em tuneReceivers(),
+        // quando já se sabe qual stream é a tela (o áudio do microfone mantém o buffer padrão).
+        if (track.kind === 'video') lowLatency(receiver);
         this.streams.set(stream.id, stream);
         if (track.kind === 'audio') this.attachAudio(track, stream.id);
         stream.onremovetrack = () => {
@@ -81,7 +134,7 @@
           const collision = description.type === 'offer' && (this.makingOffer || pc.signalingState !== 'stable');
           this.ignoreOffer = !this.polite && collision;
           if (this.ignoreOffer) return;
-          await pc.setRemoteDescription({ type: description.type, sdp: enableOpusStereo(description.sdp) });
+          await pc.setRemoteDescription({ type: description.type, sdp: tuneSdp(description.sdp) });
           if (description.type === 'offer') {
             await pc.setLocalDescription();
             this.send({ description: { type: pc.localDescription.type, sdp: pc.localDescription.sdp } });
@@ -117,8 +170,22 @@
 
     setTrack(slot, track, stream) {
       if (this.senders[slot]) { try { this.pc.removeTrack(this.senders[slot]); } catch {} delete this.senders[slot]; }
-      if (track) this.senders[slot] = this.pc.addTrack(track, stream);
+      if (track) {
+        this.senders[slot] = this.pc.addTrack(track, stream);
+        // antes da oferta: a negociação (onnegotiationneeded) só roda depois desta tarefa
+        if (track.kind === 'video') preferCodecs(this.pc, this.senders[slot]);
+      }
       this.applyParams();
+    }
+
+    /** Áudio da transmissão com atraso mínimo, para ficar sincronizado com o vídeo da tela. */
+    tuneReceivers() {
+      const st = this.session.getMemberState(this.id);
+      for (const r of this.pc.getReceivers()) {
+        if (!r.track || r._tuned) continue;
+        const stream = [...this.streams.values()].find((s) => s.getTracks().includes(r.track));
+        if (r.track.kind === 'video' || (stream && st?.screenStreamId === stream.id)) { lowLatency(r); r._tuned = true; }
+      }
     }
 
     /** Aplica bitrate/FPS/prioridade nos senders de vídeo. */
@@ -130,6 +197,7 @@
         if (!p.encodings || !p.encodings.length) return; // tenta de novo quando estabilizar
         p.encodings[0].maxBitrate = bitrate;
         p.encodings[0].maxFramerate = fps;
+        p.encodings[0].scaleResolutionDownBy = 1; // nunca reduzir a resolução por conta própria
         p.encodings[0].priority = 'high';
         p.encodings[0].networkPriority = 'high';
         p.degradationPreference = degradation;
@@ -140,10 +208,9 @@
       };
       if (s.screen) {
         const pr = s.screen.preset;
-        tune(this.senders.screenV, {
-          bitrate: pr.bitrate, fps: pr.fps,
-          degradation: s.screen.hint === 'detail' ? 'maintain-resolution' : 'maintain-framerate',
-        });
+        // maintain-resolution nos dois modos: quando falta banda/CPU, o Chrome solta quadros
+        // em vez de borrar a imagem. "Fluidez" x "Nitidez" muda o contentHint do track.
+        tune(this.senders.screenV, { bitrate: pr.bitrate, fps: pr.fps, degradation: 'maintain-resolution' });
       }
       if (s.camStream) tune(this.senders.cam, { bitrate: CFG.camera.bitrate, fps: CFG.camera.fps, degradation: 'balanced' });
     }
@@ -177,7 +244,12 @@
     changed() {
       if (this._changeQueued) return;
       this._changeQueued = true;
-      requestAnimationFrame(() => { this._changeQueued = false; this.applyVolumes(); this.onChange(); });
+      requestAnimationFrame(() => {
+        this._changeQueued = false;
+        this.applyVolumes();
+        for (const p of this.peers.values()) p.tuneReceivers();
+        this.onChange();
+      });
     }
 
     /* ------------------------- volume individual (local) ------------------------- */
@@ -360,6 +432,62 @@
       this.screen = null;
       for (const p of this.peers.values()) { p.setTrack('screenV', null); p.setTrack('screenA', null); }
       if (!silent) { this.publish(); this.changed(); }
+    }
+
+    /**
+     * Estatísticas do vídeo (painel "i" no card). Para quem transmite: uma linha por espectador,
+     * com o motivo de limitação do encoder (cpu/banda) e se o encoder é de hardware.
+     * Para quem assiste: resolução, FPS, bitrate, codec, decoder e atraso do buffer.
+     */
+    async videoStats(member, kind) {
+      const now = performance.now();
+      const prev = (this._statPrev ||= new Map());
+      const rate = (key, bytes) => {
+        const p = prev.get(key);
+        prev.set(key, { bytes, t: now });
+        return p && now > p.t ? ((bytes - p.bytes) * 8) / ((now - p.t) / 1000) : null;
+      };
+      const codecOf = (rep, all) => all.get(rep.codecId)?.mimeType?.replace('video/', '') || '?';
+      const rttOf = (all) => {
+        for (const r of all.values()) if (r.type === 'candidate-pair' && r.nominated && r.currentRoundTripTime != null) return r.currentRoundTripTime * 1000;
+        return null;
+      };
+      if (member.id === this.myId) {
+        const slot = kind === 'screen' ? 'screenV' : 'cam';
+        const rows = [];
+        for (const p of this.peers.values()) {
+          const sender = p.senders[slot];
+          if (!sender) continue;
+          const all = await sender.getStats();
+          for (const r of all.values()) {
+            if (r.type !== 'outbound-rtp' || r.kind !== 'video') continue;
+            rows.push({
+              peer: p.id, w: r.frameWidth, h: r.frameHeight, fps: r.framesPerSecond,
+              bps: rate('o' + p.id + slot, r.bytesSent), codec: codecOf(r, all),
+              impl: r.encoderImplementation || '', hw: r.powerEfficientEncoder,
+              limit: r.qualityLimitationReason || 'none', rtt: rttOf(all),
+            });
+          }
+        }
+        return { dir: 'out', rows };
+      }
+      const p = this.peers.get(member.id);
+      const stream = this.streamFor(member, kind);
+      const track = stream?.getVideoTracks()[0];
+      const recv = p && track && p.pc.getReceivers().find((r) => r.track === track);
+      if (!recv) return null;
+      const all = await recv.getStats();
+      for (const r of all.values()) {
+        if (r.type !== 'inbound-rtp' || r.kind !== 'video') continue;
+        return {
+          dir: 'in', w: r.frameWidth, h: r.frameHeight, fps: r.framesPerSecond,
+          bps: rate('i' + member.id + kind, r.bytesReceived), codec: codecOf(r, all),
+          impl: r.decoderImplementation || '', hw: r.powerEfficientDecoder,
+          buffer: r.jitterBufferEmittedCount ? (r.jitterBufferDelay / r.jitterBufferEmittedCount) * 1000 : null,
+          lost: r.packetsLost, dropped: r.framesDropped, rtt: rttOf(all),
+        };
+      }
+      return null;
     }
 
     /** Stream para exibir num tile: local ou remoto, conforme o id publicado no estado. */

@@ -78,6 +78,9 @@
     volX: '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="m22 9-6 6M16 9l6 6"/>',
     reset: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/>',
     film: '<rect x="2" y="3" width="20" height="18" rx="2"/><path d="M7 3v18M17 3v18M2 8h5M2 13h5M2 18h5M17 8h5M17 13h5M17 18h5"/>',
+    eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+    eyeOff: '<path d="M2 12s3.5-7 10-7c2 0 3.8.7 5.2 1.6M22 12s-3.5 7-10 7c-2 0-3.8-.7-5.2-1.6"/><circle cx="12" cy="12" r="3"/><path d="M3 3l18 18" class="slash"/>',
+    info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/>',
     pip: '<rect x="2" y="4" width="20" height="16" rx="2"/><rect x="12" y="11" width="7" height="6" rx="1" fill="currentColor" stroke="none"/>',
     alert: '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',
     check: '<path d="M20 6 9 17l-5-5"/>',
@@ -196,6 +199,12 @@
     staged: [],                          // anexos aguardando envio no chat
     mentions: new Set(),                 // canais com menção não lida a você
     pip: null,                           // { key } do vídeo em Picture-in-Picture
+    callOpen: LS.get('callChatOpen', false), // painel "Chat da sala" aberto no palco
+    callUnread: 0,                       // mensagens novas no chat da sala com o painel fechado
+    hideOwnPreview: LS.get('hideOwnPreview', false),
+    statsKey: null,                      // card com o painel de estatísticas aberto
+    composerChannel: null,               // canal do composer visível (texto ou chat da sala)
+    gpuDisabled: false,
   };
 
   const req = (ev, data) => new Promise((res) =>
@@ -402,6 +411,7 @@
     $('#login').classList.add('hidden');
     $('#app').classList.remove('hidden');
     renderAll();
+    window.cinecria?.getSettings?.().then((st) => { S.gpuDisabled = !!st?.gpuDisabled; if (S.gpuDisabled) gpuBanner(); }).catch(() => {});
   }
 
   function onServerUpdate(snap) {
@@ -413,26 +423,41 @@
     if (S.view === 'voice') updateStage();
   }
 
+  /** Canal cujo chat está montado na tela agora (texto, ou o chat da sala no palco). */
+  function chatDomChannel() {
+    if (S.view === 'text') return textChannel(activeServer())?.id || null;
+    if (S.view === 'voice' && S.voice && $('#callChat')) return S.voice.channelId;
+    return null;
+  }
+  /** O usuário está de fato VENDO esse chat? (painel da sala fechado não conta) */
+  function chatVisible(channelId) {
+    if (S.view === 'text') return textChannel(activeServer())?.id === channelId;
+    return S.view === 'voice' && S.voice?.channelId === channelId && S.callOpen;
+  }
+
   function onChatMessage(msg) {
-    const pingMe = msg.author.id !== S.me.id && mentionsMe(msg.text);
-    const viewing = S.view === 'text' && textChannel(activeServer())?.id === msg.channelId;
-    if (pingMe) {
+    const ch = channelById(msg.channelId);
+    const isCall = ch?.type === 'voice';
+    const mine = msg.author.id === S.me.id;
+    const visible = chatVisible(msg.channelId) && !document.hidden;
+    if (!mine && mentionsMe(msg.text)) {
       mentionDing();
-      if (!viewing || document.hidden) {
+      if (!visible) {
         S.mentions.add(msg.channelId);
-        const ch = channelById(msg.channelId);
-        if (!viewing) toast(`${msg.author.name} mencionou você${ch ? ` em #${ch.name}` : ''}`, 'ping');
+        if (!chatVisible(msg.channelId)) toast(`${msg.author.name} mencionou você ${isCall ? `no chat da ${ch.name}` : ch ? `em #${ch.name}` : ''}`, 'mention-toast');
       }
     }
-    if (!S.loaded.has(msg.channelId)) {
-      if (msg.author.id !== S.me.id) S.unread.add(msg.channelId);
-      renderRail(); renderSidebar();
-      return;
+    if (S.loaded.has(msg.channelId)) {
+      S.messages.get(msg.channelId).push(msg);
+      if (chatDomChannel() === msg.channelId) appendMessage(msg);
     }
-    S.messages.get(msg.channelId).push(msg);
-    const cur = textChannel(activeServer());
-    if (S.view === 'text' && cur?.id === msg.channelId) appendMessage(msg);
-    else if (msg.author.id !== S.me.id) { S.unread.add(msg.channelId); renderRail(); renderSidebar(); }
+    if (!mine && !chatVisible(msg.channelId)) {
+      if (isCall) {
+        // só conta o chat da sala em que você está
+        if (S.voice?.channelId === msg.channelId) { S.callUnread++; renderCallBadges(); if (S.view === 'voice') peekMessage(msg); }
+      } else S.unread.add(msg.channelId);
+    }
+    renderRail(); renderSidebar();
   }
 
   async function loadHistory(channelId) {
@@ -440,7 +465,7 @@
     const res = await req('chat:history', { channelId });
     S.messages.set(channelId, res.messages || []);
     S.loaded.add(channelId);
-    if (textChannel(activeServer())?.id === channelId && S.view === 'text') renderMessages(channelId);
+    if (chatDomChannel() === channelId) renderMessages(channelId);
   }
 
   /* ================================= render ================================ */
@@ -492,7 +517,7 @@
       const connected = S.voice?.channelId === c.id;
       const live = ms.some((m) => m.state?.screen);
       return `<button class="ch voice ${live ? 'is-live' : ''} ${connected ? 'connected' : ''} ${connected && S.view === 'voice' ? 'active' : ''}" data-channel="${c.id}" data-type="voice">
-          ${icon('volume')}<span class="ch-name">${esc(c.name)}</span>${live ? '<span class="now-showing">EM CARTAZ</span>' : ''}${ms.length ? `<em class="count">${ms.length}</em>` : ''}</button>
+          ${icon('volume')}<span class="ch-name">${esc(c.name)}</span>${live ? '<span class="now-showing">EM CARTAZ</span>' : ''}${S.mentions.has(c.id) ? `<span class="ping" title="Mencionaram você no chat da sala">${icon('at')}</span>` : ''}${ms.length ? `<em class="count">${ms.length}</em>` : ''}</button>
         <div class="vc-members">${ms.map(vcMember).join('')}</div>`;
     }).join('');
     $('#channels').innerHTML = cat('Chat', 'text') + text + cat('Salas de exibição', 'voice') + voice;
@@ -598,10 +623,13 @@
   function renderMessages(channelId) {
     const box = $('#msgList');
     if (!box) return;
-    const srv = activeServer(), ch = textChannel(srv);
+    const ch = channelById(channelId), srv = serverOfChannel(channelId);
+    if (!ch || !srv) return;
     const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
     const list = S.messages.get(channelId) || [];
-    let html = `
+    let html = ch.type === 'voice' ? `
+      <div class="cc-welcome">${icon('chat')}<div><b>Chat da ${esc(ch.name)}</b>
+        <small>Converse, mande fotos, vídeos, emojis e @menções sem sair da transmissão. Cada sala tem o seu chat.</small></div></div>` : `
       <div class="welcome">
         <div class="welcome-art">${logo()}</div>
         <h2>Boas-vindas ao<br>${esc(srv.name)}</h2>
@@ -658,7 +686,8 @@
             <span id="stageQuality"></span>
             <button class="icon-btn" data-action="layout" data-layout="grid" title="Grade">${icon('grid')}</button>
             <button class="icon-btn" data-action="layout" data-layout="focus" title="Foco na transmissão">${icon('focus')}</button>
-            <button class="icon-btn" data-action="open-text" title="Abrir chat do servidor">${icon('chat')}</button>
+            <button class="icon-btn" data-action="open-text" title="Ir para os canais de texto">${icon('hash')}</button>
+            <button class="icon-btn cc-btn" data-action="call-chat" title="Chat da sala">${icon('chat')}<span class="cc-badge" data-cc-badge></span></button>
           </div>
         </header>
         <div class="stage-body" id="stageBody">
@@ -666,9 +695,34 @@
           <div class="tiles" id="tiles"></div>
         </div>
         <div class="controls" id="controls"></div>
+        <div class="cc-peek" id="ccPeek"></div>
+        <div class="cc-back" data-action="call-chat"></div>
+        <aside class="call-chat" id="callChat" aria-label="Chat da sala">
+          <header class="cc-head">${icon('chat')}<span><b>Chat da sala</b><small id="ccName"></small></span>
+            <button class="icon-btn" data-action="call-chat" title="Fechar chat">${icon('x')}</button></header>
+          <div class="messages" id="msgList"></div>
+          <div class="composer" id="composer">
+            <div class="tray hidden" id="tray"></div>
+            <form class="composer-box" id="composerForm">
+              <button type="button" class="icon-btn" data-action="attach" title="Anexar foto ou vídeo">${icon('paperclip')}</button>
+              <input type="file" id="fileInput" accept="${ACCEPT}" multiple hidden />
+              <input id="msgInput" maxlength="2000" placeholder="Conversar na sala" autocomplete="off" spellcheck="true" enterkeyhint="send" />
+              <button type="button" class="icon-btn emoji-btn" data-action="emoji" title="Emojis">${icon('smile')}</button>
+              <button type="submit" class="icon-btn send-btn" title="Enviar">${icon('send')}</button>
+            </form>
+          </div>
+          <div class="drop-hint"><div>${icon('paperclip')}<b>Solte para anexar</b><small>Fotos e vídeos</small></div></div>
+        </aside>
       </div>`;
     stageObserver = new ResizeObserver(() => layoutTiles());
     stageObserver.observe($('#stageBody'));
+    const vc = voiceChannel();
+    if (vc) {
+      $('#ccName').textContent = vc.name;
+      $('#msgInput').placeholder = `Conversar na ${vc.name}`;
+      wireComposer(vc);
+      if (S.callOpen) setCallChat(true, { focus: false });
+    }
   }
 
   function createTile(t) {
@@ -683,8 +737,16 @@
       <div class="tile-name"></div>
       ${CAN_PIP ? `<button class="tile-pip" title="Janela flutuante (Picture-in-Picture)">${icon('pip')}</button>` : ''}
       <div class="tile-pipped">${icon('pip')}<span>Em janela flutuante</span></div>
+      <div class="tile-prevoff">${icon('eyeOff')}<b>Você está ao vivo</b><span>Prévia oculta para poupar sua GPU/CPU. Os amigos continuam vendo normalmente.</span></div>
+      ${t.kind === 'screen' ? `<button class="tile-info" title="Estatísticas da transmissão">${icon('info')}</button><div class="tile-stats"></div>` : ''}
+      ${t.kind === 'screen' && t.m.id === S.me?.id ? `<button class="tile-eye" title="Ocultar/mostrar minha prévia"></button>` : ''}
+      <button class="tile-chat" title="Chat da sala">${icon('chat')}<span class="cc-badge" data-cc-badge></span></button>
       <button class="tile-fs" title="Tela cheia">${icon('maximize')}</button>`;
     el.addEventListener('click', (e) => {
+      if (e.target.closest('.tile-stats')) return;
+      if (e.target.closest('.tile-info')) return toggleStats(t.key);
+      if (e.target.closest('.tile-eye')) return toggleOwnPreview();
+      if (e.target.closest('.tile-chat')) return setCallChat(!S.callOpen);
       if (e.target.closest('.tile-pip')) return togglePip(t.key);
       if (e.target.closest('.tile-fs')) return toggleFullscreen(el);
       if (el.classList.contains('pseudo-fs')) return;
@@ -693,12 +755,20 @@
         const r = el.getBoundingClientRect();
         return openVolumeMenu(t.m.id, r.left + r.width / 2, r.top + r.height / 2);
       }
-      S.layoutPinned = true;
-      if (S.layout === 'focus' && S.focusKey === t.key) { S.layout = 'grid'; S.focusKey = null; }
-      else { S.layout = 'focus'; S.focusKey = t.key; }
-      updateStage();
+      // espera um instante: se vier o 2º clique (duplo clique = tela cheia), não troca o foco
+      clearTimeout(el._clickT);
+      el._clickT = setTimeout(() => {
+        S.layoutPinned = true;
+        if (S.layout === 'focus' && S.focusKey === t.key) { S.layout = 'grid'; S.focusKey = null; }
+        else { S.layout = 'focus'; S.focusKey = t.key; }
+        updateStage();
+      }, 230);
     });
-    el.addEventListener('dblclick', () => toggleFullscreen(el));
+    el.addEventListener('dblclick', (e) => {
+      if (e.target.closest('button, .tile-stats')) return;
+      clearTimeout(el._clickT);
+      toggleFullscreen(el);
+    });
     return el;
   }
 
@@ -706,12 +776,18 @@
 
   function updateTile(el, t) {
     const m = t.m, st = m.state || {}, isMe = m.id === S.me.id;
-    const stream = t.kind === 'screen' ? S.voice.streamFor(m, 'screen') : st.camera ? S.voice.streamFor(m, 'cam') : null;
+    // quem transmite pode ocultar a própria prévia: nada é desenhado, o envio continua igual
+    const prevOff = isMe && t.kind === 'screen' && S.hideOwnPreview;
+    const stream = prevOff ? null : t.kind === 'screen' ? S.voice.streamFor(m, 'screen') : st.camera ? S.voice.streamFor(m, 'cam') : null;
+    el.classList.toggle('preview-off', prevOff);
+    el.classList.toggle('show-stats', S.statsKey === t.key);
+    const eye = $('.tile-eye', el);
+    if (eye) setHTML(eye, `${icon(prevOff ? 'eye' : 'eyeOff')}<span>${prevOff ? 'Mostrar prévia' : 'Ocultar prévia'}</span>`);
     const v = $('video', el);
     if (v.srcObject !== stream) v.srcObject = stream;
     if (stream && v.paused) v.play().catch(() => {});
     el.classList.toggle('has-video', !!stream);
-    el.classList.toggle('waiting', t.kind === 'screen' && !stream);
+    el.classList.toggle('waiting', t.kind === 'screen' && !stream && !prevOff);
     el.classList.toggle('mirror', isMe && t.kind === 'user');
     el.classList.toggle('speaking', t.kind === 'user' && S.speaking.has(m.id));
     if (t.kind === 'user') el.dataset.user = m.id;
@@ -785,9 +861,12 @@
         ${CAN_SHARE ? `<button class="ctl share ${scr ? 'on' : ''}" data-action="toggle-screen" title="${scr ? 'Parar transmissão' : 'Compartilhar tela'}">${icon(scr ? 'screenStop' : 'screenShare')}</button>` : ''}
         <button class="ctl mic ${S.muted ? 'off' : ''}" data-action="toggle-mute" title="${S.muted ? 'Reativar microfone' : 'Silenciar'}">${icon(S.muted ? 'micOff' : 'mic')}</button>
         <button class="ctl ${S.deafened ? 'off-soft' : ''}" data-action="toggle-deafen" title="${S.deafened ? 'Reativar áudio' : 'Desativar áudio'}">${icon(S.deafened ? 'headOff' : 'headphones')}</button>
+        <button class="ctl cc-btn ${S.callOpen ? 'on' : ''}" data-action="call-chat" title="Chat da sala">${icon('chat')}<span class="cc-badge" data-cc-badge></span></button>
         <button class="ctl hang" data-action="leave-voice" title="Desconectar">${icon('phoneOff')}</button>
       </div>
       <button class="ctl ghost fs" data-action="stage-fullscreen" title="Tela cheia">${icon('maximize')}</button>`);
+    $('#stage').classList.toggle('chat-open', S.callOpen);
+    renderCallBadges();
     layoutTiles();
   }
 
@@ -831,9 +910,17 @@
   }
 
   function toggleFullscreen(el) {
-    if (IS_TOUCH || IS_NATIVE) { if (el.classList.contains('pseudo-fs')) exitPseudoFs(); else enterPseudoFs(el); return; }
-    if (document.fullscreenElement) document.exitFullscreen();
-    else el.requestFullscreen?.().catch(() => {});
+    if (IS_TOUCH || IS_NATIVE) {
+      if (el.classList.contains('pseudo-fs')) exitPseudoFs();
+      else if (el.classList.contains('tile')) enterPseudoFs(el);
+      return;
+    }
+    if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); return; }
+    // PC: tela cheia é o PALCO, com o card escolhido em foco — assim o chat da sala,
+    // os controles e a plateia continuam acessíveis dentro da tela cheia.
+    const stage = $('#stage');
+    if (el !== stage && el?.dataset?.key) { S.layout = 'focus'; S.focusKey = el.dataset.key; S.layoutPinned = true; updateStage(); }
+    (stage || el).requestFullscreen?.().catch(() => {});
   }
 
   /* ================================= voz ================================== */
@@ -855,6 +942,8 @@
       if (v.micError) toast(window.isSecureContext ? 'Microfone indisponível — você entrou sem áudio.'
         : 'Sem microfone: o navegador só libera em HTTPS. Você pode assistir e ouvir normalmente.', 'err');
       S.view = 'voice';
+      S.callUnread = 0;
+      loadHistory(channelId); // o chat da sala já fica pronto, mesmo com o painel fechado
       keepAwake(true);
       S.layout = 'grid'; S.layoutPinned = false; S.focusKey = null; S.prevScreens = new Set();
       sfx.join();
@@ -887,6 +976,8 @@
     if (!S.voice) return;
     exitPseudoFs();
     exitPip();
+    stopStats();
+    S.callUnread = 0;
     keepAwake(false);
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     S.voice.leave();
@@ -964,7 +1055,9 @@
 
     const note = () => {
       const p = CFG.screenPresets[$('#shQ', modal).value];
-      $('#shNote', modal).textContent = `Upload estimado: até ~${Math.round((p.bitrate * viewers) / 1e6)} Mbps para ${viewers} espectador${viewers > 1 ? 'es' : ''}`;
+      $('#shNote', modal).textContent = (S.gpuDisabled ? '⚠ Modo compatibilidade ligado: a GPU do Cinecria está desligada e 1080p/1440p vão travar. ' : '')
+        + `Upload estimado: até ~${Math.round((p.bitrate * viewers) / 1e6)} Mbps para ${viewers} espectador${viewers > 1 ? 'es' : ''}`;
+      $('#shNote', modal).classList.toggle('warn', S.gpuDisabled);
     };
     $('#shQ', modal).addEventListener('change', note);
     note();
@@ -1167,6 +1260,7 @@
     },
     profile: profileModal,
     attach: () => $('#fileInput')?.click(),
+    'call-chat': () => setCallChat(!S.callOpen),
     emoji: () => toggleEmoji(),
     lightbox: (el) => openLightbox(el.dataset.src),
     'unstage': (el) => unstage(el.dataset.id),
@@ -1507,6 +1601,7 @@
   }
 
   function wireComposer(ch) {
+    S.composerChannel = ch.id;
     renderTray();
     $('#composerForm').addEventListener('submit', (e) => { e.preventDefault(); sendComposer(ch); });
     $('#fileInput').addEventListener('change', (e) => { addFiles(e.target.files); e.target.value = ''; });
@@ -1526,6 +1621,7 @@
       e.preventDefault();
       depth = 0;
       main.classList.remove('dragging');
+      if (S.view === 'voice' && !S.callOpen) setCallChat(true);
       addFiles(e.dataTransfer.files);
     };
   }
@@ -1620,6 +1716,10 @@
     if (S.me) names.add(S.me.name);
     return [...names];
   }
+  function serverOfChannel(id) {
+    for (const srv of S.servers.values()) if (srv.channels.some((c) => c.id === id)) return srv;
+    return null;
+  }
   function channelById(id) {
     for (const srv of S.servers.values()) { const c = srv.channels.find((x) => x.id === id); if (c) return c; }
     return null;
@@ -1679,7 +1779,7 @@
     return { start: at, end: pos, q };
   }
   function mentionCandidates(q) {
-    const srv = activeServer();
+    const srv = serverOfChannel(S.composerChannel) || activeServer();
     if (!srv) return [];
     const nq = norm(q);
     const seen = new Set(), pre = [], mid = [];
@@ -1896,6 +1996,133 @@
       teardownVoice(false);
       window.cinecria.setCompatVideo(!st.compatVideo);
     });
+  }
+
+  /* ============================ chat da sala (call) ============================ */
+  function renderCallBadges() {
+    const n = S.callUnread;
+    $$('[data-cc-badge]').forEach((b) => { b.textContent = n > 99 ? '99+' : n ? String(n) : ''; b.classList.toggle('on', n > 0); });
+    $$('.cc-btn').forEach((b) => b.classList.toggle('on', S.callOpen));
+  }
+  function setCallChat(open, { focus = true } = {}) {
+    S.callOpen = open;
+    LS.set('callChatOpen', open);
+    const st = $('#stage');
+    if (!st || !S.voice) return;
+    st.classList.toggle('chat-open', open);
+    if (open) {
+      S.callUnread = 0;
+      if (S.mentions.delete(S.voice.channelId)) { renderRail(); renderSidebar(); }
+      $$('.cc-peek-item').forEach((e) => e.remove());
+      renderMessages(S.voice.channelId);
+      loadHistory(S.voice.channelId);
+      const box = $('#msgList');
+      if (box) box.scrollTop = box.scrollHeight;
+      if (focus && !isMobile()) setTimeout(() => $('#msgInput')?.focus(), 240);
+    } else {
+      closeMentions(); closeEmoji();
+      $('#msgInput')?.blur();
+    }
+    renderCallBadges();
+    setTimeout(layoutTiles, 260); // depois da animação do painel
+  }
+
+  /** Balão rápido da mensagem nova quando o chat da sala está fechado (inclusive em tela cheia). */
+  function peekMessage(msg) {
+    const box = $('#ccPeek');
+    if (!box || S.callOpen) return;
+    const a = msg.attachment;
+    const text = msg.text ? richText(msg.text.length > 140 ? msg.text.slice(0, 140) + '…' : msg.text, knownNames(msg.channelId))
+      : a ? (a.kind === 'image' ? '📷 enviou uma foto' : '🎬 enviou um vídeo') : '';
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.className = 'cc-peek-item' + (mentionsMe(msg.text) ? ' mentioned' : '');
+    el.dataset.action = 'call-chat';
+    el.innerHTML = `${avatar(msg.author, 'sm')}<span><b style="color:${nameColor(msg.author.name)}">${esc(msg.author.name)}</b><span class="pk-text">${text}</span></span>`;
+    box.appendChild(el);
+    while (box.children.length > 3) box.firstElementChild.remove();
+    setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 320); }, 6000);
+  }
+
+  /* ============================ prévia e estatísticas ============================ */
+  function toggleOwnPreview() {
+    S.hideOwnPreview = !S.hideOwnPreview;
+    LS.set('hideOwnPreview', S.hideOwnPreview);
+    toast(S.hideOwnPreview ? 'Prévia oculta — sua transmissão continua normal para todos.' : 'Prévia visível de novo.');
+    updateStage();
+  }
+
+  let statsTimer = null;
+  function stopStats() { clearInterval(statsTimer); statsTimer = null; S.statsKey = null; }
+  function toggleStats(key) {
+    const open = S.statsKey !== key;
+    stopStats();
+    if (open) { S.statsKey = key; pollStats(); statsTimer = setInterval(pollStats, 1000); }
+    if (S.view === 'voice') updateStage();
+  }
+  const fmtMbps = (b) => (b == null ? '—' : (b / 1e6).toFixed(1).replace('.', ',') + ' Mbps');
+  const fmtRes = (w, h) => (w && h ? `${w}×${h}` : '—');
+  function hwLabel(flag, impl) {
+    if (flag === true) return 'hardware';
+    if (flag === false) return 'software';
+    if (/External|MediaFoundation|NVENC|AMF|QSV|D3D|DXVA|VideoToolbox|MediaCodec|V4L2|VAAPI/i.test(impl)) return 'hardware';
+    if (/libvpx|OpenH264|libaom|dav1d|FFmpeg/i.test(impl)) return 'software';
+    return impl || '?';
+  }
+  const LIMIT = { none: ['nenhum', ''], cpu: ['CPU', 'bad'], bandwidth: ['rede', 'bad'], other: ['outro', 'bad'] };
+  async function pollStats() {
+    const key = S.statsKey;
+    const el = key && S.tileEls.get(key);
+    if (!S.voice || !el) return stopStats();
+    const m = voiceMembers().find((x) => x.id === key.slice(2));
+    if (!m) return stopStats();
+    let st = null;
+    try { st = await S.voice.videoStats(m, key[0] === 's' ? 'screen' : 'cam'); } catch {}
+    const box = $('.tile-stats', el);
+    if (!box || S.statsKey !== key) return;
+    const row = (k, v, cls = '') => `<div class="st-row"><span>${k}</span><b class="${cls}">${v}</b></div>`;
+    if (!st || (st.dir === 'out' && !st.rows.length)) {
+      box.innerHTML = `<div class="st-title">${icon('info')}Estatísticas</div><div class="st-empty">${st?.dir === 'out' ? 'Ninguém está assistindo ainda.' : 'Aguardando vídeo…'}</div>`;
+      return;
+    }
+    if (st.dir === 'in') {
+      const hw = hwLabel(st.hw, st.impl);
+      box.innerHTML = `<div class="st-title">${icon('info')}Recebendo</div>`
+        + row('Resolução', fmtRes(st.w, st.h)) + row('FPS', st.fps != null ? Math.round(st.fps) : '—')
+        + row('Bitrate', fmtMbps(st.bps)) + row('Codec', `${esc(st.codec)} · ${esc(hw)}`, hw === 'software' ? 'warn' : '')
+        + row('Atraso do buffer', st.buffer != null ? Math.round(st.buffer) + ' ms' : '—', st.buffer > 150 ? 'warn' : '')
+        + row('Ping', st.rtt != null ? Math.round(st.rtt) + ' ms' : '—')
+        + row('Perdas / quadros perdidos', `${st.lost ?? 0} / ${st.dropped ?? 0}`);
+      return;
+    }
+    box.innerHTML = `<div class="st-title">${icon('info')}Enviando para ${st.rows.length} pessoa${st.rows.length > 1 ? 's' : ''}</div>` + st.rows.map((r) => {
+      const [lim, cls] = LIMIT[r.limit] || [r.limit, 'bad'];
+      const hw = hwLabel(r.hw, r.impl);
+      return `<div class="st-peer"><div class="st-name">${esc(memberIn(S.voice.serverId, r.peer)?.name || '?')}</div>`
+        + row('Resolução · FPS', `${fmtRes(r.w, r.h)} · ${r.fps != null ? Math.round(r.fps) : '—'}`)
+        + row('Bitrate', fmtMbps(r.bps)) + row('Encoder', `${esc(r.codec)} · ${esc(hw)}`, hw === 'software' ? 'warn' : '')
+        + row('Limitado por', lim, cls) + '</div>';
+    }).join('') + (st.rows.some((r) => r.limit === 'cpu') ? '<div class="st-tip">Limitado por CPU: baixe para 1080p ou confira se o modo compatibilidade (GPU desligada) está ativo.</div>'
+      : st.rows.some((r) => r.limit === 'bandwidth') ? '<div class="st-tip">Limitado pela rede: seu upload não dá conta. Baixe a qualidade ou o número de espectadores.</div>' : '');
+  }
+
+  /** Faixa de alerta quando o modo compatibilidade (GPU desligada) está ativo. */
+  function gpuBanner() {
+    if ($('.gpu-banner') || !window.cinecria?.setCompatVideo) return;
+    const b = document.createElement('div');
+    b.className = 'gpu-banner';
+    b.innerHTML = `${icon('alert')}<span><b>Modo compatibilidade ligado:</b> a GPU do Cinecria está desligada. Transmissões em 1080p/1440p vão ficar borradas e travando.</span>
+      <button class="btn sm" type="button" data-gpu="fix">Religar GPU e reiniciar</button><button class="icon-btn" type="button" data-gpu="x" title="Fechar">${icon('x')}</button>`;
+    let armed = false;
+    b.addEventListener('click', (e) => {
+      const t = e.target.closest('[data-gpu]');
+      if (!t) return;
+      if (t.dataset.gpu === 'x') return b.remove();
+      if (!armed) { armed = true; t.textContent = 'Confirmar: reiniciar agora'; t.classList.add('armed'); return; }
+      teardownVoice(false);
+      window.cinecria.setCompatVideo(false);
+    });
+    document.body.appendChild(b);
   }
 
   /* ================== luz ambiente da transmissão ("ambilight") ================== */

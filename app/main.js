@@ -40,6 +40,12 @@ app.commandLine.appendSwitch('disable-background-timer-throttling');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 // Áudio/vídeo dos amigos e vídeos do chat tocam sem exigir um clique antes.
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+// GPU: rasterização e upload de quadros sem cópia extra (menos CPU ao exibir 1440p60).
+// Não têm efeito quando o modo compatibilidade desliga a aceleração de hardware.
+app.commandLine.appendSwitch('enable-gpu-rasterization');
+app.commandLine.appendSwitch('enable-zero-copy');
+// Linux/Wayland: captura de tela via PipeWire (no Windows/macOS esse recurso não existe).
+if (process.platform === 'linux') app.commandLine.appendSwitch('enable-features', 'WebRTCPipeWireCapturer');
 
 let mainWindow = null;
 /** Fonte escolhida no seletor do Cinecria, consumida pelo próximo getDisplayMedia(). */
