@@ -13,10 +13,11 @@
   const PLUG = (name) => (IS_NATIVE ? CAP.Plugins?.[name] : null);
   const IS_TOUCH = matchMedia('(pointer: coarse)').matches;
   const isMobile = () => matchMedia('(max-width: 820px), (max-height: 520px) and (pointer: coarse)').matches;
-  // Celular: o botão fica sempre visível. Sem getDisplayMedia (hoje a regra em Android/iOS),
-  // o modal oferece transmitir um vídeo do aparelho.
+  // Celular: o botão fica sempre visível. O app Android captura a tela pelo plugin nativo; no
+  // navegador do celular, sem getDisplayMedia (hoje a regra), o modal oferece um vídeo do aparelho.
   const MOBILE_UA = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
   const HAS_DISPLAY_MEDIA = !!navigator.mediaDevices?.getDisplayMedia;
+  const HAS_NATIVE_SCREEN = !!PLUG('ScreenCapture');
   const CAN_FILE_STREAM = typeof HTMLVideoElement !== 'undefined' && !!HTMLVideoElement.prototype.captureStream;
   const CAN_SHARE = HAS_DISPLAY_MEDIA || MOBILE_UA;
   document.documentElement.classList.toggle('native', IS_NATIVE);
@@ -1567,9 +1568,10 @@
     const wantAudio = LS.get('screenAudio', true);
     const modal = openModal(`
       <div class="modal-head"><h2>Transmitir do celular</h2><button class="icon-btn" data-close title="Fechar">${icon('x')}</button></div>
-      ${HAS_DISPLAY_MEDIA ? `
+      ${HAS_NATIVE_SCREEN || HAS_DISPLAY_MEDIA ? `
         <p class="hint">O celular vai pedir para escolher o que transmitir. Em pé ou deitado, a imagem aparece inteira para quem assiste.</p>
-        <label class="check"><input type="checkbox" id="mbAudio" ${wantAudio ? 'checked' : ''}><span>Tentar transmitir o áudio (se o aparelho não permitir, vai só a imagem)</span></label>
+        ${HAS_NATIVE_SCREEN ? '<p class="hint">Nesta versão vai só a imagem, sem o áudio do celular.</p>'
+    : `<label class="check"><input type="checkbox" id="mbAudio" ${wantAudio ? 'checked' : ''}><span>Tentar transmitir o áudio (se o aparelho não permitir, vai só a imagem)</span></label>`}
         <button class="btn live share-main" id="mbScreen">${icon('screenShare')}Transmitir a tela</button>`
       : `<div class="share-warn">${icon('info')}<span>${CAN_FILE_STREAM
         ? 'Este celular não permite transmitir a tela. Você pode passar um vídeo da galeria na sala ou transmitir a tela pelo Cinecria no PC.'
@@ -1584,8 +1586,8 @@
       <div class="modal-foot"><div class="spacer"></div><button class="btn ghost" data-close>Cancelar</button></div>`);
 
     $('#mbScreen', modal)?.addEventListener('click', async () => {
-      const audio = $('#mbAudio', modal).checked;
-      LS.set('screenAudio', audio);
+      const audio = !HAS_NATIVE_SCREEN && $('#mbAudio', modal).checked;
+      if (!HAS_NATIVE_SCREEN) LS.set('screenAudio', audio);
       closeModal();
       if (!S.voice) return;
       try { wentLive(audio, await S.voice.startScreen({ audio })); } catch (e) {

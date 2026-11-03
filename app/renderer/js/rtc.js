@@ -32,6 +32,23 @@
     }
   }
 
+  /** Plugin de captura do app Android (mobile/native/android). Fora do APK não existe. */
+  const nativeScreen = () => (window.Capacitor?.isNativePlatform?.() ? window.Capacitor.Plugins?.ScreenCapture || null : null);
+  const NATIVE_CONNECT_MS = 10000;
+
+  /** Espera a conexão local subir (ou falhar) para só então entrar ao vivo. */
+  function loopbackConnected(pc) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('o vídeo da tela não chegou ao app.')), NATIVE_CONNECT_MS);
+      const check = () => {
+        if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') { clearTimeout(timer); resolve(); }
+        if (pc.iceConnectionState === 'failed') { clearTimeout(timer); reject(new Error('o vídeo da tela não chegou ao app.')); }
+      };
+      pc.addEventListener('iceconnectionstatechange', check);
+      check();
+    });
+  }
+
   /**
    * Ajusta a SDP recebida do outro lado ANTES de aplicá-la. O Chrome lê os parâmetros de codec
    * da descrição REMOTA para configurar o que ESTE lado envia, então cada participante ajusta
@@ -67,14 +84,17 @@
    * H.264 é o que tem encoder por hardware (NVENC/AMF/QuickSync via Media Foundation) no
    * Chrome/Electron para Windows; VP9 rende mais qualidade por bit que o VP8 em telas.
    * Se o outro lado não suportar, a negociação cai no próximo da lista — nada quebra.
+   * vp8First: vídeo da galeria, de tamanho qualquer. O H.264 de hardware de alguns celulares
+   * (MediaTek) trava com largura fora de múltiplos de 16; o VP8 é por software e aceita tudo.
    */
-  function preferCodecs(pc, sender) {
+  function preferCodecs(pc, sender, vp8First = false) {
     try {
       const tr = pc.getTransceivers().find((t) => t.sender === sender);
       const caps = window.RTCRtpReceiver?.getCapabilities?.('video')?.codecs;
       if (!tr?.setCodecPreferences || !caps?.length) return;
       const rank = (c) => {
         const m = c.mimeType.toLowerCase(), f = c.sdpFmtpLine || '';
+        if (vp8First && m === 'video/vp8') return -1;
         if (m === 'video/h264') return /packetization-mode=1/.test(f) ? (/profile-level-id=42e0/i.test(f) ? 0 : 1) : 2;
         if (m === 'video/vp9') return /profile-id=[1-3]/.test(f) ? 4 : 3;
         if (m === 'video/vp8') return 5;
@@ -191,7 +211,7 @@
       if (track) {
         this.senders[slot] = this.pc.addTrack(track, stream);
         // antes da oferta: a negociação (onnegotiationneeded) só roda depois desta tarefa
-        if (track.kind === 'video') preferCodecs(this.pc, this.senders[slot]);
+        if (track.kind === 'video') preferCodecs(this.pc, this.senders[slot], slot === 'screenV' && !!this.session.screen?.vp8First);
       }
       this.applyParams();
     }
@@ -415,6 +435,7 @@
      * no navegador, o seletor nativo do Chromium aparece.
      */
     async startScreen({ presetKey, hint = 'motion', audio = true }) {
+      if (nativeScreen()) return this.startNativeScreen(hint);
       if (IS_MOBILE) {
         return this.beginScreen(await mobileDisplayMedia(audio), { preset: MOBILE_PRESET, presetKey: 'mobile', hint });
       }
@@ -432,6 +453,34 @@
       return this.beginScreen(stream, { preset, presetKey, hint });
     }
 
+    /**
+     * App Android: o WebView não captura a tela, então o plugin captura e manda o vídeo para cá
+     * por uma conexão WebRTC local. Daqui em diante é uma transmissão como outra qualquer.
+     */
+    async startNativeScreen(hint) {
+      const plugin = nativeScreen();
+      const pc = new RTCPeerConnection({ iceServers: [] });
+      const { receiver } = pc.addTransceiver('video', { direction: 'recvonly' });
+      let stopListener = null;
+      const cleanup = () => {
+        stopListener?.remove();
+        plugin.stop().catch(() => {});
+        pc.close();
+      };
+      try {
+        await pc.setLocalDescription(await pc.createOffer());
+        const { sdp } = await plugin.start({ sdp: pc.localDescription.sdp });
+        stopListener = await plugin.addListener('stopped', () => this.stopScreen());
+        await pc.setRemoteDescription({ type: 'answer', sdp });
+        await loopbackConnected(pc);
+        return this.beginScreen(new MediaStream([receiver.track]), { preset: MOBILE_PRESET, presetKey: 'mobile', hint, cleanup });
+      } catch (e) {
+        cleanup();
+        if (e.code === 'CANCELLED') throw new DOMException(e.message, 'AbortError');
+        throw e;
+      }
+    }
+
     /** Transmite um vídeo do aparelho na sala. Precisa ser chamado direto de um toque (o play exige). */
     async startVideoFile(file) {
       const el = document.createElement('video');
@@ -443,7 +492,7 @@
         await el.play();
         const stream = el.captureStream();
         if (!stream.getVideoTracks().length) throw new Error('Esse arquivo não tem imagem.');
-        const r = this.beginScreen(stream, { preset: MOBILE_PRESET, presetKey: 'mobile', hint: 'motion', cleanup });
+        const r = this.beginScreen(stream, { preset: MOBILE_PRESET, presetKey: 'mobile', hint: 'motion', cleanup, vp8First: true });
         el.onended = () => this.stopScreen(); // o vídeo acabou: sai do ar
         return r;
       } catch (e) {
@@ -453,7 +502,7 @@
     }
 
     /** Coloca o stream no ar para todos os participantes. */
-    beginScreen(stream, { preset, presetKey, hint, cleanup = null }) {
+    beginScreen(stream, { preset, presetKey, hint, cleanup = null, vp8First = false }) {
       const v = stream.getVideoTracks()[0];
       v.contentHint = hint; // 'motion' = prioriza fluidez | 'detail' = prioriza nitidez
       // (sem applyConstraints extra: reconfigurar o track força um redimensionamento a mais)
@@ -462,7 +511,7 @@
       if (a) a.contentHint = 'music';
 
       if (this.screen) this.stopScreen(true);
-      this.screen = { stream, preset, presetKey, hint, cleanup };
+      this.screen = { stream, preset, presetKey, hint, cleanup, vp8First };
       for (const p of this.peers.values()) {
         p.setTrack('screenV', v, stream);
         if (a) p.setTrack('screenA', a, stream);

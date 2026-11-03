@@ -9,9 +9,9 @@ O app Android usa **a mesma interface e o mesmo módulo WebRTC do desktop** (`ap
 | Código | **reaproveita 100%** do `app/renderer` (UI, chat, canais, `rtc.js`) | reescrever a UI inteira + trocar o WebRTC por `react-native-webrtc` |
 | Uma correção | vale para PC, navegador e Android ao mesmo tempo | precisa ser feita duas vezes |
 | WebRTC | o do Chromium (WebView do Android), o mesmo do Electron | módulo nativo |
-| Transmitir a tela **do celular** | ❌ o WebView não tem `getDisplayMedia` | ✅ via MediaProjection (mais trabalho nativo) |
+| Transmitir a tela **do celular** | ✅ plugin nativo (`mobile/native/android`), só imagem | ✅ via MediaProjection |
 
-No celular você **assiste às telas, fala, ouve e liga a câmera**. Transmitir a tela do próprio celular exige um plugin nativo (MediaProjection) — está nos próximos passos abaixo.
+No celular você **assiste às telas, fala, ouve, liga a câmera e transmite a tela** (só a imagem). Veja "Transmitir a tela do celular" em Detalhes técnicos.
 
 ## Estrutura
 
@@ -27,7 +27,8 @@ cinecria/
     ├── assets/                # ícone e splash (gerados para todas as densidades)
     ├── scripts/
     │   ├── copy-web.js        # copia app/renderer → www e ajusta socket.io + CSP
-    │   └── patch-android.js   # permissões: microfone, câmera, wake lock, HTTP local
+    │   └── patch-android.js   # permissões (microfone, câmera, wake lock, HTTP local) + captura de tela
+    ├── native/android/        # código Java da captura de tela (copiado para android/ pelo patch)
     └── android/               # gerado pelo "npm run setup" (projeto Android Studio)
 ```
 
@@ -39,7 +40,7 @@ cinecria/
 - **Tela cheia**: toque em ⛶ → o vídeo ocupa a tela, gira para paisagem e esconde a barra de status.
 - **Botão voltar do Android**: fecha modal → tela cheia → gavetas → sai do palco, nessa ordem.
 - **Tela sempre ligada** enquanto estiver num canal de voz.
-- O botão "Tela" some no celular (não dá para transmitir pelo WebView).
+- O botão "Tela" abre "Transmitir do celular": a tela do aparelho (no APK) ou um vídeo da galeria.
 
 ## Rodando
 
@@ -85,10 +86,11 @@ No macOS/Linux, troque `gradlew` por `./gradlew` nos scripts. Ícones: `npm run 
 - **HTTP na rede local**: o app roda em `https://localhost` (origem segura, exigida pelo microfone/câmera). Conectar a `http://192.168.x.x` é "conteúdo misto", por isso `allowMixedContent` + `usesCleartextTraffic`. Com servidor HTTPS na internet nada disso é necessário.
 - **Permissões**: o Capacitor converte o pedido de microfone/câmera do WebRTC em pedido de permissão do Android automaticamente; o `patch-android.js` só declara as permissões no manifest.
 - **Plugins nativos** (acessados por `Capacitor.Plugins`, sem bundler): `App` (botão voltar), `StatusBar`, `ScreenOrientation`, `KeepAwake`. Fora do Android, o código ignora todos eles.
+- **Transmitir a tela do celular**: o WebView não tem `getDisplayMedia`. O plugin `ScreenCapture` captura com `MediaProjection` (dentro de um Foreground Service) e manda o vídeo ao WebView por uma conexão WebRTC local, no próprio aparelho, usando a biblioteca `stream-webrtc-android`. O `rtc.js` recebe uma faixa de vídeo comum e a transmite para a sala como no PC. Limites: só imagem, sem áudio, e o vídeo é codificado duas vezes, por isso a captura vai até 1280 px no lado maior. Edite o Java em `native/android`, nunca em `android/`: o `npm run sync` sobrescreve.
 - **Consumo de dados**: assistir a uma transmissão 1080p60 recebe até ~9 Mbps (≈ 4 GB por hora). No 4G, peça para quem transmite usar 720p.
 
 ## Próximos passos
 
-1. **Transmitir a tela do celular**: plugin nativo com `MediaProjection` + Foreground Service, ou migrar a parte de mídia para `react-native-webrtc`.
+1. **Áudio na transmissão da tela do celular**: capturar com `AudioPlaybackCapture` (Android 10+).
 2. **Voz com o app em segundo plano**: o Android pausa o WebView; para manter a chamada com a tela apagada é preciso um Foreground Service com notificação ("Em chamada no Cinecria").
 3. **TURN** para 4G (veja o README principal).
