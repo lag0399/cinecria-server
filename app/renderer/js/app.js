@@ -78,6 +78,7 @@
     volX: '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="m22 9-6 6M16 9l6 6"/>',
     reset: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/>',
     film: '<rect x="2" y="3" width="20" height="18" rx="2"/><path d="M7 3v18M17 3v18M2 8h5M2 13h5M2 18h5M17 8h5M17 13h5M17 18h5"/>',
+    bubble: '<path d="M21 11.5a8.4 8.4 0 0 1-12.2 7.5L3 21l2-5.3A8.5 8.5 0 1 1 21 11.5z"/>',
     bulb: '<path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V18h6v-1.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/>',
     trend: '<path d="m3 17 6-6 4 4 8-8"/><path d="M14 7h7v7"/>',
     back: '<path d="m15 18-6-6 6-6"/>',
@@ -776,7 +777,29 @@
     connect(loginPicker.value());
   }
 
-  $('#nick').addEventListener('input', () => $('#nick').classList.remove('invalid'));
+  $('#nick').addEventListener('input', () => { $('#nick').classList.remove('invalid'); $('#login .name-alert')?.remove(); });
+
+  const isNameTaken = (res) => res?.error === 'NAME_TAKEN' || res?.code === 'name_taken';
+  /** Alerta grande "Nome indisponível": card vermelho + campo tremendo com borda brilhante. */
+  function nameAlert(container, input, name) {
+    container.querySelector('.name-alert')?.remove();
+    const el = document.createElement('div');
+    el.className = 'name-alert';
+    el.setAttribute('role', 'alert');
+    el.innerHTML = `<span class="na-ico">${icon('alert')}</span>
+      <div class="na-txt"><b>Nome indisponível</b>
+        <p>Já existe alguém com o nome <q>${esc(name)}</q> online no momento. Por favor, escolha outro apelido.</p></div>
+      <button type="button" class="icon-btn" title="Fechar">${icon('x')}</button>`;
+    el.querySelector('button').addEventListener('click', () => el.remove());
+    const field = input.closest('.field');
+    field.parentNode.insertBefore(el, field);
+    input.classList.remove('shake');
+    void input.offsetWidth; // reinicia a animação
+    input.classList.add('invalid', 'shake');
+    input.focus();
+    input.select();
+  }
+
   function showLogin(msg = '') {
     $('#app').classList.add('hidden');
     $('#login').classList.remove('hidden');
@@ -801,8 +824,8 @@
       const res = await req('hello', { name: profile.name, avatar: S.avatarData, invites: LS.get('invites', []), resume: S.resumeKey });
       if (res.error) {
         socket.disconnect();
-        showLogin(res.error);
-        if (res.code === 'name_taken') { $('#nick').classList.add('invalid'); $('#nick').focus(); $('#nick').select(); }
+        if (isNameTaken(res)) { showLogin(); return nameAlert($('#login .login-card'), $('#nick'), profile.name); }
+        showLogin(res.message || res.error);
         return;
       }
       onInit(res);
@@ -879,7 +902,7 @@
       mentionDing();
       if (!visible) {
         S.mentions.add(msg.channelId);
-        if (!chatVisible(msg.channelId)) toast(`${msg.author.name} mencionou você ${isCall ? `no chat da ${ch.name}` : ch ? `em #${ch.name}` : ''}`, 'mention-toast');
+        if (!chatVisible(msg.channelId)) toast(`${msg.author.name} mencionou você ${isCall ? `no chat da ${ch.name}` : ch ? `em ${ch.name}` : ''}`, 'mention-toast');
       }
     }
     if (S.loaded.has(msg.channelId)) {
@@ -951,26 +974,27 @@
     const cur = textChannel(srv);
     // servidores públicos oficiais: ninguém cria/edita salas (o servidor também recusa)
     const cat = (label, type) => `<div class="cat"><span>${label}</span>${srv.isPublic ? '' : `<button class="cat-add" data-action="create-channel" data-type="${type}" title="Criar ${type === 'voice' ? 'sala' : 'canal'}">${icon('plus')}</button>`}</div>`;
+    // Texto e voz têm o MESMO visual de pílula; só o ícone muda (balão × alto-falante).
     const text = srv.channels.filter((c) => c.type === 'text').map((c) => `
-      <button class="ch ${S.view === 'text' && cur?.id === c.id ? 'active' : ''} ${S.unread.has(c.id) ? 'unread' : ''}" data-channel="${c.id}" data-type="text">
-        ${icon('hash')}<span class="ch-name">${esc(c.name)}</span>${S.mentions.has(c.id) ? `<span class="ping" title="Mencionaram você">${icon('at')}</span>` : ''}</button>`).join('');
+      <button class="spot ${S.view === 'text' && cur?.id === c.id ? 'active' : ''} ${S.unread.has(c.id) ? 'unread' : ''}" data-channel="${c.id}" data-type="text">
+        <span class="spot-ico">${icon('bubble')}</span><span class="spot-name">${esc(c.name)}</span>
+        ${S.mentions.has(c.id) ? `<span class="ping" title="Mencionaram você">${icon('at')}</span>` : S.unread.has(c.id) ? '<span class="spot-dot" title="Mensagens novas"></span>' : ''}
+      </button>`).join('');
     const voice = srv.channels.filter((c) => c.type === 'voice').map((c) => {
       const ms = srv.members.filter((m) => m.voice?.channelId === c.id);
       const connected = S.voice?.channelId === c.id;
-      const live = ms.filter((m) => m.state?.screen);
-      const stack = ms.slice(0, 4).map((m) => `<img class="room-av" src="${esc(avatarSrc(m))}" data-n="${esc(m.name)}" data-profile="${m.id}" title="${esc(m.name)}" alt="">`).join('');
-      return `<button class="room ${live.length ? 'is-live' : ''} ${connected ? 'connected' : ''} ${connected && S.view === 'voice' ? 'active' : ''} ${ms.length ? '' : 'empty'}" data-channel="${c.id}" data-type="voice">
-          <span class="room-top"><span class="room-ico">${icon(live.length ? 'film' : 'volume')}</span><span class="room-name">${esc(c.name)}</span>
-            ${S.mentions.has(c.id) ? `<span class="ping" title="Mencionaram você no chat da sala">${icon('at')}</span>` : ''}
-            ${live.length ? '<span class="live-badge">AO VIVO</span>' : ''}</span>
-          <span class="room-meta">${ms.length
-            ? `<span class="room-stack">${stack}${ms.length > 4 ? `<em>+${ms.length - 4}</em>` : ''}</span><span class="room-count">${icon('users')}${ms.length}</span>`
-            : '<span class="room-empty">Sala vazia · entre e dê o play</span>'}
-            ${live.length ? `<span class="room-live">${icon('screen')}${esc(live[0].name)}${live.length > 1 ? ` +${live.length - 1}` : ''}</span>` : ''}</span>
+      const live = ms.some((m) => m.state?.screen);
+      const avs = ms.slice(0, 6).map((m) => `<img class="spot-av" src="${esc(avatarSrc(m))}" data-n="${esc(m.name)}" data-profile="${m.id}" title="${esc(m.name)}" alt="">`).join('');
+      return `<button class="spot voice ${connected ? 'connected' : ''} ${connected && S.view === 'voice' ? 'active' : ''} ${live ? 'live' : ''}" data-channel="${c.id}" data-type="voice">
+          <span class="spot-ico">${icon('volume')}</span><span class="spot-name">${esc(c.name)}</span>
+          ${S.mentions.has(c.id) ? `<span class="ping" title="Mencionaram você no chat da sala">${icon('at')}</span>` : ''}
+          ${live ? '<span class="spot-live" title="Transmissão ao vivo"></span>' : ''}
+          ${ms.length ? `<span class="spot-count">${ms.length}</span>` : ''}
+          ${ms.length && !connected ? `<span class="spot-avs">${avs}${ms.length > 6 ? `<em>+${ms.length - 6}</em>` : ''}</span>` : ''}
         </button>
         ${connected ? `<div class="vc-members">${ms.map(vcMember).join('')}</div>` : ''}`;
     }).join('');
-    $('#channels').innerHTML = cat('Bate-papo', 'text') + `<div class="ch-list">${text}</div>` + cat('Salas de exibição', 'voice') + `<div class="room-list">${voice}</div>`;
+    $('#channels').innerHTML = cat('Bate-papo', 'text') + `<div class="spot-list">${text}</div>` + cat('Salas de exibição', 'voice') + `<div class="spot-list">${voice}</div>`;
   }
 
   function renderVoicePanel() {
@@ -1048,8 +1072,8 @@
     main.innerHTML = `
       <header class="main-head">
         <button class="icon-btn mobile-only" data-action="drawer" title="Menu">${icon('menu')}</button>
-        ${icon('hash', 'muted')}<b>${esc(ch.name)}</b>
-        <span class="topic">Chat do servidor · links, indicações e horários da sessão</span>
+        <span class="head-ico">${icon('bubble')}</span>
+        <span class="head-txt"><b>${esc(ch.name)}</b><small>Bate-papo · ${activeServer()?.members.length || 0} online</small></span>
         <div class="spacer"></div>
         ${S.voice ? `<button class="head-pill" data-action="open-stage">${icon('volume')}<span class="pill-long">Voltar ao canal de voz</span><span class="pill-short">Voz</span></button>` : ''}
         <button class="icon-btn ${S.showMembers ? 'on' : ''}" data-action="toggle-members" title="Lista de membros">${icon('users')}</button>
@@ -1060,7 +1084,7 @@
         <form class="composer-box" id="composerForm">
           <button type="button" class="icon-btn" data-action="attach" title="Anexar foto ou vídeo">${icon('paperclip')}</button>
           <input type="file" id="fileInput" accept="${ACCEPT}" multiple hidden />
-          <input id="msgInput" maxlength="2000" placeholder="Conversar em #${esc(ch.name)}" autocomplete="off" spellcheck="true" enterkeyhint="send" />
+          <input id="msgInput" maxlength="2000" placeholder="Mensagem para ${esc(ch.name)}…" autocomplete="off" spellcheck="true" enterkeyhint="send" />
           <button type="button" class="icon-btn emoji-btn" data-action="emoji" title="Emojis">${icon('smile')}</button>
           <button type="submit" class="icon-btn send-btn" title="Enviar">${icon('send')}</button>
         </form>
@@ -1083,7 +1107,7 @@
       <div class="welcome">
         <div class="welcome-art">${logo()}</div>
         <h2>Boas-vindas ao<br>${esc(srv.name)}</h2>
-        <p>Este é o começo de <b>#${esc(ch.name)}</b>. Chame a galera, entre em um canal de voz e aperte <b>Tela</b> para transmitir.</p>
+        <p>Este é o começo do bate-papo <b>${esc(ch.name)}</b>. Chame a galera, entre numa sala de exibição e aperte <b>Tela</b> para transmitir.</p>
         <div class="welcome-cards">
           <button class="wcard" data-action="copy-invite"><span class="wc-ico c1">${icon('users')}</span><span>Convidar seus amigos</span>${icon('chevronR')}</button>
           <button class="wcard" data-action="join-first-voice"><span class="wc-ico c2">${icon('screenShare')}</span><span>Começar uma sessão de cinema</span>${icon('chevronR')}</button>
@@ -1137,7 +1161,7 @@
             <button class="icon-btn lights-btn" data-action="lights" title="Luzes de cinema (ambilight)">${icon('bulb')}<span>Luzes</span></button>
             <button class="icon-btn" data-action="layout" data-layout="grid" title="Grade">${icon('grid')}</button>
             <button class="icon-btn" data-action="layout" data-layout="focus" title="Foco na transmissão">${icon('focus')}</button>
-            <button class="icon-btn" data-action="open-text" title="Ir para os canais de texto">${icon('hash')}</button>
+            <button class="icon-btn" data-action="open-text" title="Ir para o bate-papo">${icon('bubble')}</button>
             <button class="icon-btn cc-btn" data-action="call-chat" title="Chat da sala">${icon('chat')}<span class="cc-badge" data-cc-badge></span></button>
           </div>
         </header>
@@ -1680,7 +1704,7 @@
       <p class="hint srv-line">${icon('lock')}Conectado a <b>${esc(new URL(profile.serverUrl).host)}</b></p>
       <div class="modal-foot"><button class="btn danger-ghost" id="pfOut">${icon('logout')}Sair</button><div class="spacer"></div><button class="btn ghost" data-close>Cancelar</button><button class="btn primary" id="pfSave">Salvar</button></div>`);
     const picker = setupAvatarPicker($('#pfAvatar', m), $('#pfName', m), profile);
-    $('#pfName', m).addEventListener('input', () => { $('#pfName', m).classList.remove('invalid'); $('#pfErr', m).textContent = ''; });
+    $('#pfName', m).addEventListener('input', () => { $('#pfName', m).classList.remove('invalid'); $('#pfErr', m).textContent = ''; m.querySelector('.name-alert')?.remove(); });
     $('#pfSave', m).addEventListener('click', async () => {
       const name = $('#pfName', m).value.trim();
       if (!name) return toast('O apelido não pode ficar vazio.', 'err');
@@ -1690,8 +1714,8 @@
       const res = await req('profile:update', { name, avatar });
       btn.disabled = false; btn.textContent = 'Salvar';
       if (res.error) {
-        if (res.code === 'name_taken') { $('#pfName', m).classList.add('invalid'); $('#pfName', m).focus(); $('#pfErr', m).textContent = res.error; }
-        return toast(res.error, 'err');
+        if (isNameTaken(res)) return nameAlert(m, $('#pfName', m), name);
+        return toast(res.message || res.error, 'err');
       }
       Object.assign(profile, picker.state(), { name });
       saveProfile();
@@ -1988,9 +2012,10 @@
     const body = (m.text ? `<div class="body ${isJumbo(m.text) ? 'jumbo' : ''}">${richText(m.text, names)}</div>` : '')
       + (m.attachment ? attachmentHTML(m.attachment) : '');
     const ping = m.author.id !== S.me?.id && mentionsMe(m.text) ? ' mentioned' : '';
-    if (grouped) return `<div class="msg cont${ping}"><span class="ts-side">${time}</span><div class="msg-main">${body}</div></div>`;
+    const mine = m.author.id === S.me?.id || (S.me && m.author.name === S.me.name) ? ' mine' : '';
+    if (grouped) return `<div class="msg cont${ping}${mine}"><span class="ts-side">${time}</span><div class="msg-main">${body}</div></div>`;
     const pf = `data-profile="${esc(m.author.id)}" data-pname="${esc(m.author.name)}" data-pav="${esc(m.author.avatar || '')}"`;
-    return `<div class="msg${ping}"><span class="msg-av" ${pf}>${avatar(m.author, 'md')}</span><div class="msg-main">
+    return `<div class="msg${ping}${mine}"><span class="msg-av" ${pf}>${avatar(m.author, 'md')}</span><div class="msg-main">
       <div class="meta"><b class="msg-name" ${pf} style="color:${nameColor(m.author.name)}">${esc(m.author.name)}</b><span class="ts">${fmtTime(m.ts)}</span></div>
       ${body}</div></div>`;
   }

@@ -272,7 +272,8 @@ const publicUser = (u) => ({ id: u.id, name: u.name, avatar: u.avatar, voice: u.
 /* ------------------------------ Apelidos únicos ------------------------------ */
 // "DVD", "dvd" e " dvd " são o mesmo apelido (sem diferenciar maiúsculas, acentos e espaços).
 const nameKey = (n) => String(n).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/\s+/g, ' ').trim();
-const NAME_TAKEN = 'Este apelido já está em uso por outra pessoa online. Escolha outro!';
+const NAME_TAKEN_MSG = 'Este nome não está disponível! Já existe alguém com este nome online.';
+const nameTaken = (extra = {}) => ({ error: 'NAME_TAKEN', code: 'name_taken', message: NAME_TAKEN_MSG, ...extra });
 /** Quem está online com esse apelido (exceto `exceptId`). */
 function nameOwner(name, exceptId) {
   const k = nameKey(name);
@@ -336,7 +337,7 @@ io.on('connection', (socket) => {
       // Mesmo aparelho reconectando (queda de rede): a conexão antiga ainda não caiu por timeout.
       // A chave "resume" é aleatória e só esse aparelho conhece — derruba a antiga e segue.
       if (resume && owner.resume === resume) io.sockets.sockets.get(owner.id)?.disconnect(true);
-      else return reply({ error: NAME_TAKEN, code: 'name_taken' });
+      else return reply(nameTaken());
     }
 
     user = {
@@ -365,7 +366,7 @@ io.on('connection', (socket) => {
   socket.on('profile:update', (payload = {}, cb) => {
     if (!user) return;
     const name = cleanName(payload.name);
-    if (name && nameOwner(name, user.id)) return ack(cb)({ error: NAME_TAKEN, code: 'name_taken', me: publicUser(user) });
+    if (name && nameOwner(name, user.id)) return ack(cb)(nameTaken({ me: publicUser(user) }));
     let av;
     if ('avatar' in payload) {
       av = normalizeAvatar(payload.avatar);

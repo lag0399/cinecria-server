@@ -48,13 +48,13 @@ window.CINECRIA_CONFIG = {
 
   // Perfis de qualidade do compartilhamento de tela.
   // bitrate = teto por espectador (no mesh, o upload total = bitrate × espectadores).
-  // Tetos equilibrados para hardware comum (1.5). Quem tem PC forte e boa internet pode subir.
+  // 1.6: tetos altos para nitidez (o encoder de hardware H.264 dá conta; o limite real é o upload).
   screenPresets: {
-    '720p30':  { label: '720p 30FPS',  width: 1280, height: 720,  fps: 30, bitrate: 2_500_000 },
-    '1080p30': { label: '1080p 30FPS', width: 1920, height: 1080, fps: 30, bitrate: 4_500_000 },
-    '1080p60': { label: '1080p 60FPS', width: 1920, height: 1080, fps: 60, bitrate: 4_500_000 },
-    '1440p60': { label: '1440p 60FPS', width: 2560, height: 1440, fps: 60, bitrate: 6_000_000 },
-    'source':  { label: '★ Nativa 60FPS (Recomendado)', width: null, height: null, fps: 60, bitrate: 6_000_000 },
+    '720p30':  { label: '720p 30FPS',  width: 1280, height: 720,  fps: 30, bitrate: 4_000_000 },
+    '1080p30': { label: '1080p 30FPS', width: 1920, height: 1080, fps: 30, bitrate: 8_000_000 },
+    '1080p60': { label: '1080p 60FPS', width: 1920, height: 1080, fps: 60, bitrate: 8_000_000 },
+    '1440p60': { label: '1440p 60FPS', width: 2560, height: 1440, fps: 60, bitrate: 12_000_000 },
+    'source':  { label: '★ Nativa 60FPS (Recomendado)', width: null, height: null, fps: 60, bitrate: 12_000_000 },
   },
   // Sempre selecionado ao abrir "Compartilhar tela" (resolução original da tela, 60 FPS).
   defaultScreenPreset: 'source',

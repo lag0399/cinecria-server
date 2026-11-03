@@ -23,7 +23,7 @@
    *    (os primeiros segundos ficam borrados) e, em várias versões, limita o vídeo a ~2,5 Mbps
    *    mesmo com encodings[0].maxBitrate maior.
    */
-  const VIDEO_KBPS = { start: 2500, min: 500, max: 20000 }; // o teto real é o maxBitrate do perfil
+  const VIDEO_KBPS = { start: 4000, min: 600, max: 20000 }; // começa nítido; o teto real é o maxBitrate do perfil
   function tuneSdp(sdp) {
     const pts = [...sdp.matchAll(/a=rtpmap:(\d+) opus\/48000\/2/gi)].map((m) => m[1]);
     for (const pt of pts) {
