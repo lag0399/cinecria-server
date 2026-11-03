@@ -137,10 +137,8 @@ const MAX_AVATAR_DATAURL = 2_900_000;                // base64 de 2 MB ≈ 2,8 m
 const AVATAR_CACHE_BYTES = (Number(process.env.AVATAR_CACHE_MB) || 200) * 1024 * 1024;
 /** @type {Map<string, { mime: string, buf: Buffer }>} */ const avatars = new Map();
 let avatarBytes = 0;
-// Avatar por link: HTTPS de um CDN de GIF (o link pode não ter extensão) ou de qualquer site com
-// extensão de imagem. Endereços internos ficam de fora: cada membro da sala abriria o link na própria rede.
-const REMOTE_AVATAR_HOST = /(^|\.)(giphy\.com|klipy\.com|klipycdn\.com|tenor\.com)$/i;
-const REMOTE_AVATAR_EXT = /\.(gif|png|jpe?g|webp|avif)$/i;
+// Avatar por link: HTTPS de qualquer site (o app confere se abre como imagem antes de usar).
+// Endereços internos ficam de fora: cada membro da sala abriria o link na própria rede.
 const PRIVATE_HOST = /^(localhost$|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|0\.|\[)|\.(local|localhost|internal)$/i;
 
 /** Valida e normaliza o avatar enviado. Retorna o valor a guardar, null (padrão) ou undefined (inválido). */
@@ -169,8 +167,7 @@ function normalizeAvatar(a) {
   if (a.length > 600) return undefined;
   try {
     const u = new URL(a);
-    if (u.protocol === 'https:' && !u.username && !u.password && !PRIVATE_HOST.test(u.hostname)
-      && (REMOTE_AVATAR_HOST.test(u.hostname) || REMOTE_AVATAR_EXT.test(u.pathname))) return u.href;
+    if (u.protocol === 'https:' && !u.username && !u.password && !PRIVATE_HOST.test(u.hostname)) return u.href;
   } catch {}
   return undefined;
 }

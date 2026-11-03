@@ -981,8 +981,25 @@ html.touch .tile-pip, html.native .tile-pip { display: none !important; }
 .gif-msg { grid-column: 1 / -1; display: flex; gap: 10px; align-items: flex-start; padding: 16px; border-radius: 12px; background: var(--ink-3); color: var(--text-2); font-size: 13px; line-height: 1.45; }
 .gif-msg .ic { flex: none; color: var(--accent-2); margin-top: 1px; }
 .gif-msg code { font: 12px var(--mono); color: var(--accent-2); }
-.gif-link { display: flex; gap: 8px; }
-.gif-link input { flex: 1; min-width: 0; padding: 9px 12px; border-radius: 10px; background: var(--ink-0); border: 1px solid var(--line-2); outline: none; }
+.beta-badge { flex: none; background: rgba(239, 68, 68, .18); color: #f87171; border: 1px solid rgba(239, 68, 68, .45); font-size: 10px; font-weight: 800; line-height: 1.3; padding: 2px 7px; border-radius: 999px; text-transform: uppercase; letter-spacing: .06em; }
+.gif-head .beta-badge { margin-left: 8px; }
+.gif-card-chips { display: inline-flex; align-items: center; gap: 6px; }
+.gif-card-chips .beta-badge { background: rgba(60, 12, 12, .88); } /* legível por cima do mosaico */
+.av-link-tip { display: block; width: 100%; margin-top: 8px; padding: 7px 10px; border-radius: 10px; background: rgba(245, 158, 11, .1); border: 1px solid rgba(245, 158, 11, .3); color: #fcd34d; font-size: 12px; font-weight: 600; text-align: center; }
+.av-link-tip:hover { background: rgba(245, 158, 11, .16); }
+.gif-tip { flex: none; padding: 9px 12px; border-radius: 10px; background: rgba(245, 158, 11, .1); border: 1px solid rgba(245, 158, 11, .35); color: #fde68a; font-size: 12px; line-height: 1.4; }
+.gif-tip b { color: #fcd34d; }
+.gif-link { flex: none; display: flex; align-items: center; gap: 8px; }
+.gif-link .btn { flex: none; white-space: nowrap; }
+.gif-link-prev { flex: none; width: 40px; height: 40px; border-radius: 9px; object-fit: cover; background: var(--ink-3); }
+.gif-link-msg { flex: none; color: #fca5a5; font-size: 12px; }
+.share-main { width: 100%; justify-content: center; }
+.share-warn { display: flex; gap: 10px; align-items: flex-start; padding: 12px; border-radius: 12px; background: rgba(245, 158, 11, .1); border: 1px solid rgba(245, 158, 11, .35); color: #fde68a; font-size: 13px; line-height: 1.45; }
+.share-warn .ic { flex: none; margin-top: 1px; }
+.share-file { display: grid; gap: 8px; }
+.share-file .btn { width: 100%; justify-content: center; min-width: 0; }
+.share-file #mbName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gif-link input { flex: 1; min-width: 0; padding: 11px 12px; border-radius: 10px; background: var(--ink-0); border: 1px solid rgba(59, 130, 246, .45); outline: none; }
 .gif-link input:focus { border-color: rgba(59, 130, 246, .7); }
 .gif-foot { display: flex; justify-content: space-between; gap: 10px; color: var(--text-3); font-size: 12px; }
 .giphy-attr b { color: var(--text); letter-spacing: .04em; }

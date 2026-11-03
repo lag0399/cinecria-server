@@ -13,8 +13,12 @@
   const PLUG = (name) => (IS_NATIVE ? CAP.Plugins?.[name] : null);
   const IS_TOUCH = matchMedia('(pointer: coarse)').matches;
   const isMobile = () => matchMedia('(max-width: 820px), (max-height: 520px) and (pointer: coarse)').matches;
-  // Android/iOS não têm getDisplayMedia: no celular dá para assistir, falar e ligar a câmera.
-  const CAN_SHARE = !!navigator.mediaDevices?.getDisplayMedia && !/Android|iPhone|iPad/i.test(navigator.userAgent);
+  // Celular: o botão fica sempre visível. Sem getDisplayMedia (hoje a regra em Android/iOS),
+  // o modal oferece transmitir um vídeo do aparelho.
+  const MOBILE_UA = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  const HAS_DISPLAY_MEDIA = !!navigator.mediaDevices?.getDisplayMedia;
+  const CAN_FILE_STREAM = typeof HTMLVideoElement !== 'undefined' && !!HTMLVideoElement.prototype.captureStream;
+  const CAN_SHARE = HAS_DISPLAY_MEDIA || MOBILE_UA;
   document.documentElement.classList.toggle('native', IS_NATIVE);
   document.documentElement.classList.toggle('touch', IS_TOUCH);
   document.documentElement.classList.toggle('no-share', !CAN_SHARE);
@@ -225,7 +229,9 @@
     const pick = () => fileInput.click();
     $('.av-upload', root).addEventListener('click', pick);
     $('.avatar-big', root).addEventListener('click', pick);
-    $('.av-gif', root).addEventListener('click', () => openGifPicker((url) => { st.remote = url; st.mode = 'remote'; render(); }));
+    const pickGif = (url) => { st.remote = url; st.mode = 'remote'; render(); };
+    $('.av-gif', root).addEventListener('click', () => openGifPicker(pickGif));
+    $('.av-gif-link', root).addEventListener('click', () => openGifPicker(pickGif, { focusLink: true }));
     fileInput.addEventListener('change', async () => {
       const f = fileInput.files[0];
       fileInput.value = '';
@@ -269,9 +275,10 @@
       </button>
       <button class="av-card gif-card av-gif" type="button">
         <span class="gif-mosaic"><i></i><i></i><i></i><i></i></span>
-        <span class="gif-card-label"><span class="gif-chip">GIF</span><b>${icon('sparkles')}Escolher GIF</b></span>
+        <span class="gif-card-label"><span class="gif-card-chips"><span class="gif-chip">GIF</span><span class="beta-badge">Beta</span></span><b>${icon('sparkles')}Escolher GIF</b></span>
       </button>
-    </div>`;
+    </div>
+    <button class="av-link-tip av-gif-link" type="button">💡 Recomendado: use o link direto de um GIF</button>`;
   const GIF_CATEGORIES = [
     { q: '', label: 'GIFs em alta', trend: true },
     { q: 'hello', label: 'hello' }, { q: 'lol', label: 'lol' }, { q: 'love', label: 'love' },
@@ -380,13 +387,13 @@
         m = u.pathname.match(/\/(?:gifs|stickers|embed)\/(?:[\w-]*-)?([A-Za-z0-9]+)\/?$/);
         return m ? `https://media.giphy.com/media/${m[1]}/200w.gif` : null;
       }
-      if (/\.(gif|png|jpe?g|webp|avif)$/i.test(u.pathname)) return u.href; // o servidor confere o resto
+      return u.username || u.password ? null : u.href; // é imagem de verdade? a prévia carrega e confirma
     } catch {}
     return null;
   }
 
   function closeGifPicker() { const g = $('.gif-back'); if (!g) return false; g.remove(); return true; }
-  function openGifPicker(onPick) {
+  function openGifPicker(onPick, { focusLink = false } = {}) {
     closeGifPicker();
     const ov = document.createElement('div');
     ov.className = 'gif-back';
@@ -394,11 +401,17 @@
       <div class="gif-pop" role="dialog" aria-label="Escolher GIF">
         <div class="gif-head">
           <button type="button" class="icon-btn gif-backbtn hidden" data-g="home" title="Categorias">${icon('back')}</button>
-          <b>Escolher GIF</b><span class="spacer"></span>
+          <b>Escolher GIF</b><span class="beta-badge">Beta</span><span class="spacer"></span>
           <button type="button" class="icon-btn" data-g="x" title="Fechar">${icon('x')}</button></div>
         <label class="gif-search">${icon('search')}<input type="search" placeholder="Buscar GIFs…" autocomplete="off" spellcheck="false"></label>
         <div class="gif-body"></div>
-        <form class="gif-link"><input placeholder="…ou cole o link de um GIF ou imagem (https://…)" spellcheck="false" autocomplete="off"><button type="submit" class="btn ghost sm">Usar</button></form>
+        <div class="gif-tip">💡 <b>Recomendado:</b> Como a busca de GIFs está em fase Beta, é altamente recomendado que você procure um GIF na internet (Giphy, Tenor, Pinterest, Discord, etc.), copie o link direto do GIF (.gif) e cole no campo abaixo para usar no seu perfil sem falhas!</div>
+        <form class="gif-link">
+          <img class="gif-link-prev hidden" alt="Prévia do GIF">
+          <input inputmode="url" placeholder="Colar link direto do GIF (https://...)" spellcheck="false" autocomplete="off">
+          <button type="submit" class="btn primary sm">Usar este Link</button>
+        </form>
+        <small class="gif-link-msg hidden">Esse link não abriu como imagem. Copie o endereço direto do GIF (normalmente termina em .gif).</small>
         <div class="gif-foot"><span class="gif-attr">Busca de GIFs</span></div>
       </div>`;
     document.body.appendChild(ov);
@@ -463,14 +476,23 @@
       const q = input.value.trim();
       timer = setTimeout(() => (q ? results(q) : home()), 450); // espera parar de digitar: poupa o limite da chave
     });
+    const linkInput = $('.gif-link input', ov), linkPrev = $('.gif-link-prev', ov), linkMsg = $('.gif-link-msg', ov);
+    linkPrev.onload = () => { linkPrev.classList.remove('hidden'); linkMsg.classList.add('hidden'); };
+    linkPrev.onerror = () => { if (!linkPrev.getAttribute('src')) return; linkPrev.classList.add('hidden'); linkMsg.classList.remove('hidden'); };
+    linkInput.addEventListener('input', () => { // prévia assim que o link é colado
+      const url = gifFromLink(linkInput.value);
+      linkPrev.classList.add('hidden');
+      linkMsg.classList.toggle('hidden', !linkInput.value.trim() || !!url);
+      if (url) linkPrev.src = url; else linkPrev.removeAttribute('src');
+    });
     $('.gif-link', ov).addEventListener('submit', (e) => {
       e.preventDefault();
-      const url = gifFromLink($('.gif-link input', ov).value);
-      if (!url) return toast('Cole um link https:// de GIF ou imagem (.gif, .png, .jpg, .webp) ou do GIPHY.', 'err');
+      const url = gifFromLink(linkInput.value);
+      if (!url) return toast('Cole um link https:// direto do GIF ou da imagem.', 'err');
       choose(url);
     });
     home();
-    setTimeout(() => input.focus(), 30);
+    setTimeout(() => (focusLink ? linkInput : input).focus(), 30);
   }
 
   /* ============================ editor de recorte ============================ */
@@ -1526,10 +1548,70 @@
   }
 
   function toggleScreen() {
-    if (!CAN_SHARE) return toast('Transmitir tela está disponível no app de PC. No celular você assiste, fala e usa a câmera.');
+    if (!CAN_SHARE) return toast('Este navegador não permite transmitir a tela. Use o app de PC.');
     if (!S.voice) return toast('Entre em um canal de voz para transmitir.');
     if (S.voice.screen) { S.voice.stopScreen(); renderVoicePanel(); return; }
-    openScreenPicker();
+    if (MOBILE_UA) openMobileSharePicker(); else openScreenPicker();
+  }
+
+  /** Depois de entrar ao vivo: avisa e abre a própria transmissão em destaque. */
+  function wentLive(wantAudio, r) {
+    sfx.live();
+    toast(wantAudio && !r.hasAudio ? 'Você está ao vivo (sem áudio).' : 'Você está ao vivo!', 'ok');
+    S.view = 'voice'; S.layout = 'focus'; S.layoutPinned = false; S.focusKey = 's:' + S.me.id;
+    renderAll();
+  }
+
+  /** Celular: tela do aparelho (se o navegador permitir) ou um vídeo da galeria. */
+  function openMobileSharePicker() {
+    const wantAudio = LS.get('screenAudio', true);
+    const modal = openModal(`
+      <div class="modal-head"><h2>Transmitir do celular</h2><button class="icon-btn" data-close title="Fechar">${icon('x')}</button></div>
+      ${HAS_DISPLAY_MEDIA ? `
+        <p class="hint">O celular vai pedir para escolher o que transmitir. Em pé ou deitado, a imagem aparece inteira para quem assiste.</p>
+        <label class="check"><input type="checkbox" id="mbAudio" ${wantAudio ? 'checked' : ''}><span>Tentar transmitir o áudio (se o aparelho não permitir, vai só a imagem)</span></label>
+        <button class="btn live share-main" id="mbScreen">${icon('screenShare')}Transmitir a tela</button>`
+      : `<div class="share-warn">${icon('info')}<span>${CAN_FILE_STREAM
+        ? 'Este celular não permite transmitir a tela. Você pode passar um vídeo da galeria na sala ou transmitir a tela pelo Cinecria no PC.'
+        : 'Este celular não permite transmitir a tela nem vídeos da galeria. Para transmitir, use o Cinecria no PC.'}</span></div>`}
+      ${CAN_FILE_STREAM ? `
+        <div class="share-file">
+          <b>Transmitir Vídeo/Arquivo da Galeria na Sala</b>
+          <input type="file" id="mbFile" accept="video/*" hidden>
+          <button class="btn ghost" id="mbPick">${icon('folder')}<span id="mbName">Escolher vídeo</span></button>
+          <button class="btn live hidden" id="mbFileGo">${icon('screenShare')}Transmitir este vídeo</button>
+        </div>` : ''}
+      <div class="modal-foot"><div class="spacer"></div><button class="btn ghost" data-close>Cancelar</button></div>`);
+
+    $('#mbScreen', modal)?.addEventListener('click', async () => {
+      const audio = $('#mbAudio', modal).checked;
+      LS.set('screenAudio', audio);
+      closeModal();
+      if (!S.voice) return;
+      try { wentLive(audio, await S.voice.startScreen({ audio })); } catch (e) {
+        if (e.name !== 'NotAllowedError' && e.name !== 'AbortError') toast('Falha ao compartilhar: ' + (e.message || e.name), 'err');
+      }
+    });
+    if (!CAN_FILE_STREAM) return;
+    const fileInput = $('#mbFile', modal);
+    $('#mbPick', modal).addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => {
+      const f = fileInput.files[0];
+      if (!f) return;
+      $('#mbName', modal).textContent = f.name;
+      $('#mbFileGo', modal).classList.remove('hidden');
+    });
+    $('#mbFileGo', modal).addEventListener('click', async () => {
+      const f = fileInput.files[0];
+      if (!f || !S.voice) return;
+      try {
+        const r = await S.voice.startVideoFile(f);
+        closeModal();
+        wentLive(false, r);
+      } catch (e) {
+        toast(e.name === 'NotSupportedError' ? 'Este celular não abre esse formato de vídeo. Tente um MP4.' : 'Falha ao transmitir: ' + (e.message || e.name), 'err');
+      }
+    });
   }
 
   /** Seletor de tela do Cinecria: fontes (Electron), qualidade, otimização e áudio. */
@@ -1618,11 +1700,7 @@
       closeModal();
       if (!S.voice) return;
       try {
-        const r = await S.voice.startScreen(opts);
-        sfx.live();
-        toast(opts.audio && !r.hasAudio ? 'Você está ao vivo (sem áudio do sistema).' : 'Você está ao vivo!', 'ok');
-        S.view = 'voice'; S.layout = 'focus'; S.layoutPinned = false; S.focusKey = 's:' + S.me.id;
-        renderAll();
+        wentLive(opts.audio, await S.voice.startScreen(opts));
       } catch (e) {
         if (e.name !== 'NotAllowedError' && e.name !== 'AbortError') toast('Falha ao compartilhar: ' + (e.message || e.name), 'err');
       }

@@ -13,6 +13,24 @@
  */
 (function () {
   const CFG = window.CINECRIA_CONFIG;
+  const IS_MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  // Celular: sem forçar resolução (9:16 em pé, 16:9 deitado) e com teto menor para o upload móvel.
+  const MOBILE_PRESET = { label: 'Celular', width: null, height: null, fps: 30, bitrate: 4_000_000 };
+
+  /**
+   * getDisplayMedia no celular: só as opções simples, que os navegadores móveis aceitam.
+   * Se o áudio for recusado, tenta só o vídeo. Quem cancelou ou negou a permissão não é perguntado de novo.
+   */
+  async function mobileDisplayMedia(audio) {
+    const md = navigator.mediaDevices;
+    if (!audio) return md.getDisplayMedia({ video: true });
+    try {
+      return await md.getDisplayMedia({ video: true, audio: true });
+    } catch (e) {
+      if (e.name === 'NotAllowedError' || e.name === 'AbortError') throw e;
+      return md.getDisplayMedia({ video: true });
+    }
+  }
 
   /**
    * Ajusta a SDP recebida do outro lado ANTES de aplicá-la. O Chrome lê os parâmetros de codec
@@ -397,6 +415,9 @@
      * no navegador, o seletor nativo do Chromium aparece.
      */
     async startScreen({ presetKey, hint = 'motion', audio = true }) {
+      if (IS_MOBILE) {
+        return this.beginScreen(await mobileDisplayMedia(audio), { preset: MOBILE_PRESET, presetKey: 'mobile', hint });
+      }
       const preset = CFG.screenPresets[presetKey] || CFG.screenPresets[CFG.defaultScreenPreset];
       const video = { frameRate: { ideal: preset.fps, max: preset.fps } };
       if (preset.width) { video.width = { ideal: preset.width, max: preset.width }; video.height = { ideal: preset.height, max: preset.height }; }
@@ -408,7 +429,31 @@
         systemAudio: audio ? 'include' : 'exclude', // (navegador)
         selfBrowserSurface: 'exclude',
       });
+      return this.beginScreen(stream, { preset, presetKey, hint });
+    }
 
+    /** Transmite um vídeo do aparelho na sala. Precisa ser chamado direto de um toque (o play exige). */
+    async startVideoFile(file) {
+      const el = document.createElement('video');
+      const url = URL.createObjectURL(file);
+      const cleanup = () => { el.onended = null; el.pause(); el.removeAttribute('src'); el.load(); URL.revokeObjectURL(url); };
+      el.playsInline = true;
+      el.src = url;
+      try {
+        await el.play();
+        const stream = el.captureStream();
+        if (!stream.getVideoTracks().length) throw new Error('Esse arquivo não tem imagem.');
+        const r = this.beginScreen(stream, { preset: MOBILE_PRESET, presetKey: 'mobile', hint: 'motion', cleanup });
+        el.onended = () => this.stopScreen(); // o vídeo acabou: sai do ar
+        return r;
+      } catch (e) {
+        cleanup();
+        throw e;
+      }
+    }
+
+    /** Coloca o stream no ar para todos os participantes. */
+    beginScreen(stream, { preset, presetKey, hint, cleanup = null }) {
       const v = stream.getVideoTracks()[0];
       v.contentHint = hint; // 'motion' = prioriza fluidez | 'detail' = prioriza nitidez
       // (sem applyConstraints extra: reconfigurar o track força um redimensionamento a mais)
@@ -417,7 +462,7 @@
       if (a) a.contentHint = 'music';
 
       if (this.screen) this.stopScreen(true);
-      this.screen = { stream, preset, presetKey, hint };
+      this.screen = { stream, preset, presetKey, hint, cleanup };
       for (const p of this.peers.values()) {
         p.setTrack('screenV', v, stream);
         if (a) p.setTrack('screenA', a, stream);
@@ -430,6 +475,7 @@
     stopScreen(silent = false) {
       if (!this.screen) return;
       this.screen.stream.getTracks().forEach((t) => t.stop());
+      this.screen.cleanup?.();
       this.screen = null;
       for (const p of this.peers.values()) { p.setTrack('screenV', null); p.setTrack('screenA', null); }
       if (!silent) { this.publish(); this.changed(); }
@@ -549,6 +595,7 @@
       this.micStream?.getTracks().forEach((t) => t.stop());
       this.camStream?.getTracks().forEach((t) => t.stop());
       this.screen?.stream.getTracks().forEach((t) => t.stop());
+      this.screen?.cleanup?.();
       this.micStream = this.camStream = this.screen = null;
     }
 
