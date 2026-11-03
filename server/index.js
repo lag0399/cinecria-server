@@ -48,6 +48,87 @@ app.get('/api/client-config', (_req, res) => res.json({
   gif: { klipyKey: process.env.KLIPY_API_KEY || '', giphyKey: process.env.GIPHY_API_KEY || '' },
 }));
 
+/* ------------------------------ Busca de GIFs ------------------------------ */
+// Passa pelo servidor (sem chave no app e sem CORS). Se o Tenor não responder, usa o catálogo abaixo.
+const TENOR_SEARCH = 'https://g.tenor.com/v1/search';
+const TENOR_KEY = 'LIVDSRZULELA';
+const TENOR_RETRY_MS = 10 * 60_000; // depois de uma falha, não insiste a cada busca
+let tenorDownUntil = 0;
+
+// IDs de GIFs do GIPHY, conferidos um a um (arquivo válido + conteúdo adequado para foto de perfil).
+const GIF_CATALOG = {
+  trending: ['lkdH8FmImcGoylv3t3', 'H5C8CevNMbpBqNqFjl', 'tXL4FHPSnVJ0A', 'fwZYmddK9zihy', 'BFYLNwlsSNtcc', 'OuQmhmAAdJFLi', 'QUENDfi6DEMLzQ0CKt', 'WXaSmAhW1uS3IwtDBa', 'xT9IgG50Fb7Mi0prBC', 'GpyS1lJXJYupG'],
+  hello: ['xT9IgG50Fb7Mi0prBC', 'Cmr1OMJ2FN0B2', 'ASd0Ukj0y3qMM', 'vSid82Egm63bA8Zl2c', 'vFKqnCdLPNOKc', 'LUVyaW2HUBSnkPI8J6', 'rk44JW16dyCLues7kE', 'l0MYDEPLWRWbJoRuU', 'dzaUX7CAG0Ihi', 'WS3i2y88foYpE584rI'],
+  lol: ['IhyGL914g9ShHdHVFy', 'GpyS1lJXJYupG', 'CoDp6NnSmItoY', 'H6bfaRHZ2MIfVfkNNx', 'XHeLeuirRbwptHhSWd', 'fwoTNpE71piQHf5bap', 'fUYhyT9IjftxrxJXcE', 'fbUWl2JJezSbm', '12PIT4DOj6Tgek', 'lszAB3TzFtRaU'],
+  love: ['t8xgPfC5oNIRMrNooe', 'Zl7u48zLVFgLpRwq6f', 'l41JWw65TcBGjPpRK', '3PtzgNmZ0t2Nd7aOvj', '7W1rgKAxlDe3m', 'jiVsld6wK2ay1Z8ZrG', 'As3pqYwhNl3EiKKMCf', '108M7gCS1JSoO4', '1qfKOARhdIKhehgtuQ', 'bk5vxWFSZXicJHijQ5'],
+  'happy birthday': ['VyB31XTqZNJhFRZNyl', '7NON3hH96H4InrrkPy', 's4LzrsdXzm9MYVSzw8', '23jEmjPf4RkR3gWizv', '3oEhn78T277GKAq6Gc', 'yoJC2GnSClbPOkV0eA', 'NspG4nRIcgUO35f40p', '31VVbt1NFZ2B2Et8hY', '8AdhxLETq6WhyyyxBk', 'atm2dByuXcsBa'],
+  'thank you': ['L9Q2rzzBHrfv4a1y4h', 'MF9wHplBBbqwYiTTEk', '3osxYdXvsGw6wT5lIY', 'BYoRqTmcgzHcL9TCy1', 'E8rJEUMGs9cyWEtNXT', 'l3q2wJsC23ikJg9xe', '5xtDarmwsuR9sDRObyU', 'XS2eOsn989PsUlrTFR', 'i21tixUQEE7TEqwmYa', '3oz8xIsloV7zOmt81G'],
+  excited: ['OfkGZ5H2H3f8Y', 'pa37AAGzKXoek', '7eAvzJ0SBBzHy', 'y8Mz1yj13s3kI', '31lPv5L3aIvTi', 'xTiN0CNHgoRf1Ha7CM', 'ka6QK9Hc2YVfLBvDjy', 'xUOxfgmXP3EUTK4EPC', 'RzQwk7l0zQnfAbSpCw', 'fUQ4rhUZJYiQsas6WD'],
+  yes: ['m745dTCAxerHa', 'J336VCs1JC42zGRhjH', 'GuDU8r5CnUoYtbS2CR', 'DffShiJ47fPqM', 'WQr2txk5iEYUS6Kv3d', 'fkD36jhiqzJ9m', 'jErnybNlfE1lm', 'bky50dwwRsYBrsiKJU', '3rgXBOmTlzyFCURutG', 'geslvCFM31sFW'],
+  no: ['fXnRObM8Q0RkOmR5nf', 'L4fOLr8aB3d3BYQUfq', 'NpL4D3Oc2bJUMAXF9P', 'd2Z9y3eDoq2cxPpK', '15aGGXfSlat2dP6ohs', 'hQWHjq6C0Zb44', 'STfLOU6iRBRunMciZv', '1zSz5MVw4zKg0', 'd2ZcfODrNWlA5Gg0', 'LSmULmByAQHQs'],
+  sorry: ['3o7WIwkSmw32NgXvTG', 'fV8iuSEwLQ6005diSh', 'd7fTn7iSd2ivS', '3ohc1ffY03hnhRUyUU', '9JLOGsEfPjpR1179HE', 'XYEEvoX0Ub69ZgN9ai', 'RM0FFEcOLBzEjtrbCK', 'fxU6WfJ8eembhmZBC6', 'f61dYwhTxlkBDfETA5', 'DSyFdYa5BK6Qx1glHa'],
+  anime: ['SnVZO1N0Wo6u4', 'QtZSl6mcqfmvCBI2cb', 'yMocMAF7vTfEKGPwVB', 'FWAcpJsFT9mvrv0e7a', 'JF1bGLHo6nY6t8LuFe', 'tptFQ8QAJYYvu', 'jOZt5tdGYxzz0H6Nfi', 'fnQUc5YIrUCSylGdZU'],
+  cinema: ['9EvnXdZaUZbCqScn67', 'Qak0pFjTzg16g0mcxt', 'JCQadcl0dhLSJAOMuf', 'j2OYGnTEFmUghpldE1', 'JymRvCWcasbdMVXcVA', 'tmH5eUto7WumOdTvRG', 'cPRerhEQe5I0RTspX3', 'ReaBkv2sLr9SQWrvii', 'a5WUxR640fXQlsYb0K'],
+};
+// Termos em português levam à mesma categoria do catálogo.
+const GIF_ALIASES = {
+  '': 'trending', 'em alta': 'trending',
+  oi: 'hello', ola: 'hello', 'bom dia': 'hello', tchau: 'hello',
+  kkk: 'lol', kkkk: 'lol', rindo: 'lol', risada: 'lol', engracado: 'lol',
+  amor: 'love', coracao: 'love', 'te amo': 'love',
+  aniversario: 'happy birthday', parabens: 'happy birthday', 'feliz aniversario': 'happy birthday', birthday: 'happy birthday',
+  obrigado: 'thank you', obrigada: 'thank you', valeu: 'thank you', thanks: 'thank you',
+  animado: 'excited', animada: 'excited', empolgado: 'excited', empolgada: 'excited',
+  sim: 'yes', claro: 'yes', nao: 'no', desculpa: 'sorry', desculpe: 'sorry', perdao: 'sorry',
+  filme: 'cinema', filmes: 'cinema', cine: 'cinema', movie: 'cinema', pipoca: 'cinema',
+};
+
+/** Resposta do catálogo. matched=false: o termo não tem categoria e os GIFs são só sugestões. */
+function gifFallback(q) {
+  const term = q.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const cat = Object.hasOwn(GIF_CATALOG, term) ? term : Object.hasOwn(GIF_ALIASES, term) ? GIF_ALIASES[term] : null;
+  return {
+    source: 'fallback',
+    provider: 'GIPHY',
+    matched: !!cat,
+    items: GIF_CATALOG[cat || 'trending'].map((id) => ({
+      preview: `https://media.giphy.com/media/${id}/100w.gif`,
+      use: `https://media.giphy.com/media/${id}/200w.gif`,
+      title: '',
+    })),
+  };
+}
+
+async function tenorSearch(q) {
+  const params = new URLSearchParams({ q: q || 'trending', key: TENOR_KEY, limit: '24' });
+  const r = await fetch(`${TENOR_SEARCH}?${params}`, { signal: AbortSignal.timeout(5000) });
+  if (!r.ok) throw new Error('Tenor ' + r.status);
+  const { results } = await r.json();
+  return (Array.isArray(results) ? results : []).map((x) => {
+    const m = x?.media?.[0];
+    return {
+      preview: m?.tinygif?.url || m?.nanogif?.url || m?.gif?.url,
+      use: m?.gif?.url || m?.tinygif?.url,
+      title: x?.title || x?.content_description || '',
+    };
+  }).filter((x) => x.preview && x.use);
+}
+
+app.use('/api/gifs', (_req, res, next) => { res.set('Access-Control-Allow-Origin', '*'); next(); });
+app.get('/api/gifs', async (req, res) => {
+  const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 50) : '';
+  if (Date.now() >= tenorDownUntil) {
+    try {
+      const items = await tenorSearch(q);
+      if (items.length) return res.json({ source: 'tenor', provider: 'Tenor', matched: true, items });
+    } catch (e) {
+      tenorDownUntil = Date.now() + TENOR_RETRY_MS;
+      console.warn('[gifs] Tenor indisponível, usando o catálogo:', e.message);
+    }
+  }
+  res.json(gifFallback(q));
+});
+
 /* ------------------------------ Avatares ------------------------------ */
 // O avatar NÃO vai dentro das atualizações de presença: um GIF de 2 MB repetido a cada
 // "fulano mutou" para cada membro derrubaria a sala. Ele fica aqui e circula como "/avatar/<hash>".
@@ -56,8 +137,11 @@ const MAX_AVATAR_DATAURL = 2_900_000;                // base64 de 2 MB ≈ 2,8 m
 const AVATAR_CACHE_BYTES = (Number(process.env.AVATAR_CACHE_MB) || 200) * 1024 * 1024;
 /** @type {Map<string, { mime: string, buf: Buffer }>} */ const avatars = new Map();
 let avatarBytes = 0;
-// GIF escolhido na busca: só links HTTPS dos CDNs de GIF (GIPHY, KLIPY, Tenor antigo).
+// Avatar por link: HTTPS de um CDN de GIF (o link pode não ter extensão) ou de qualquer site com
+// extensão de imagem. Endereços internos ficam de fora: cada membro da sala abriria o link na própria rede.
 const REMOTE_AVATAR_HOST = /(^|\.)(giphy\.com|klipy\.com|klipycdn\.com|tenor\.com)$/i;
+const REMOTE_AVATAR_EXT = /\.(gif|png|jpe?g|webp|avif)$/i;
+const PRIVATE_HOST = /^(localhost$|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|0\.|\[)|\.(local|localhost|internal)$/i;
 
 /** Valida e normaliza o avatar enviado. Retorna o valor a guardar, null (padrão) ou undefined (inválido). */
 function normalizeAvatar(a) {
@@ -81,11 +165,12 @@ function normalizeAvatar(a) {
     }
     return `/avatar/${key}`;
   }
-  // GIF escolhido na busca: guarda só o link HTTPS
+  // GIF escolhido na busca ou link colado: guarda só o link HTTPS
   if (a.length > 600) return undefined;
   try {
     const u = new URL(a);
-    if (u.protocol === 'https:' && REMOTE_AVATAR_HOST.test(u.hostname) && !u.username && !u.password) return u.href;
+    if (u.protocol === 'https:' && !u.username && !u.password && !PRIVATE_HOST.test(u.hostname)
+      && (REMOTE_AVATAR_HOST.test(u.hostname) || REMOTE_AVATAR_EXT.test(u.pathname))) return u.href;
   } catch {}
   return undefined;
 }

@@ -136,7 +136,7 @@
     return url;
   }
   const fallbackAvatar = (name) => genAvatar(initials(name)[0], hue(name), (hue(name) + 40) % 360);
-  /** O servidor devolve "/avatar/<hash>" (foto/GIF guardado nele) ou um link HTTPS do GIPHY. */
+  /** O servidor devolve "/avatar/<hash>" (foto/GIF guardado nele) ou um link HTTPS de imagem. */
   const avatarSrc = (u) => {
     const a = u?.avatar;
     if (a && a[0] === '/') return profile.serverUrl + a;
@@ -258,9 +258,10 @@
     IDB.set('avatarUpload', upload || null);
   }
 
-  /* ============================== GIFs (KLIPY / GIPHY) ============================== */
-  // Tenor: API desligada pelo Google em 30/06/2026. KLIPY primeiro, GIPHY se o KLIPY falhar.
-  // As buscas saem do próprio app (exigência dos dois provedores).
+  /* ============================== GIFs (servidor + KLIPY / GIPHY) ============================== */
+  // A busca passa por GET /api/gifs (Tenor, com catálogo de reserva): funciona sem chave.
+  // Se o Render tiver chave do KLIPY ou do GIPHY, elas têm prioridade sobre o catálogo, porque buscam
+  // qualquer termo. Essas buscas saem do próprio app (exigência dos dois provedores).
   const AV_ACTIONS_HTML = `
     <div class="av-cards">
       <button class="av-card up-card av-upload" type="button">
@@ -299,21 +300,29 @@
       if (k.giphy) list.push({ name: 'GIPHY', fetch: (q) => this.giphy(k.giphy, q) });
       return list;
     },
-    /** Busca (q vazio = em alta). Tenta cada provedor; o primeiro que responder vence. */
+    /** Rota do servidor: nunca falha por falta de chave nem por CORS (20 s: o Render pode estar acordando). */
+    async backend(q) {
+      const r = await fetch(`${profile.serverUrl}/api/gifs?${new URLSearchParams({ q: q.slice(0, 50) })}`, { signal: AbortSignal.timeout(20000) });
+      if (!r.ok) throw new Error('Servidor ' + r.status);
+      return r.json();
+    },
+    /** Busca (q vazio = em alta). Tenor pelo servidor; depois KLIPY/GIPHY, se houver chave; por fim, o catálogo. */
     async search(q = '') {
       const cacheKey = 'gif:' + q.toLowerCase();
       try { const c = JSON.parse(sessionStorage.getItem(cacheKey) || 'null'); if (c && Date.now() - c.t < 30 * 60e3) return c.r; } catch {}
-      const list = await this.providers();
-      if (!list.length) { const e = new Error('nokey'); e.code = 'nokey'; throw e; }
-      let last;
-      for (const p of list) {
+      const done = (r) => { try { sessionStorage.setItem(cacheKey, JSON.stringify({ t: Date.now(), r })); } catch {} return r; };
+      let api = null, last;
+      try {
+        api = await this.backend(q);
+        if (api.source === 'tenor') return done(api);
+      } catch (e) { last = e; console.warn('[gif] servidor', e.message); }
+      for (const p of await this.providers()) {
         try {
           const items = await p.fetch(q);
-          const r = { provider: p.name, items };
-          try { sessionStorage.setItem(cacheKey, JSON.stringify({ t: Date.now(), r })); } catch {}
-          return r;
+          return done({ provider: p.name, items });
         } catch (e) { last = e; console.warn('[gif]', p.name, e.message); }
       }
+      if (api) return done(api);
       throw last;
     },
     async klipy(key, q) {
@@ -371,7 +380,7 @@
         m = u.pathname.match(/\/(?:gifs|stickers|embed)\/(?:[\w-]*-)?([A-Za-z0-9]+)\/?$/);
         return m ? `https://media.giphy.com/media/${m[1]}/200w.gif` : null;
       }
-      if (/(^|\.)(klipy\.com|klipycdn\.com|tenor\.com)$/.test(h) && /\.(gif|webp)$/i.test(u.pathname)) return u.href;
+      if (/\.(gif|png|jpe?g|webp|avif)$/i.test(u.pathname)) return u.href; // o servidor confere o resto
     } catch {}
     return null;
   }
@@ -389,7 +398,7 @@
           <button type="button" class="icon-btn" data-g="x" title="Fechar">${icon('x')}</button></div>
         <label class="gif-search">${icon('search')}<input type="search" placeholder="Buscar GIFs…" autocomplete="off" spellcheck="false"></label>
         <div class="gif-body"></div>
-        <form class="gif-link"><input placeholder="…ou cole o link de um GIF (GIPHY / KLIPY)" spellcheck="false" autocomplete="off"><button type="submit" class="btn ghost sm">Usar</button></form>
+        <form class="gif-link"><input placeholder="…ou cole o link de um GIF ou imagem (https://…)" spellcheck="false" autocomplete="off"><button type="submit" class="btn ghost sm">Usar</button></form>
         <div class="gif-foot"><span class="gif-attr">Busca de GIFs</span></div>
       </div>`;
     document.body.appendChild(ov);
@@ -402,10 +411,7 @@
       test.onerror = () => toast('Não consegui carregar esse GIF.', 'err');
       test.src = url;
     };
-    const fail = (e) => {
-      if (e?.code === 'nokey') return msg('A busca precisa de uma chave grátis do <b>KLIPY</b> ou do <b>GIPHY</b> (no Render: <code>KLIPY_API_KEY</code> / <code>GIPHY_API_KEY</code>, ou em <code>config.js</code>). A API do Tenor foi desligada pelo Google em 30/06/2026.<br>Enquanto isso, cole abaixo o link de um GIF.');
-      msg('Não deu para buscar GIFs agora (limite da chave ou sem conexão). Tente de novo em instantes ou cole um link abaixo.');
-    };
+    const fail = () => msg('Não deu para buscar GIFs agora (servidor fora do ar ou sem conexão). Tente de novo em instantes ou cole um link abaixo.');
 
     async function home() {
       backBtn.classList.add('hidden');
@@ -420,9 +426,10 @@
         // fundo de cada categoria: a prévia guardada dela, ou um GIF em alta enquanto não há
         $$('.gif-cat', body).forEach((el, i) => {
           const bg = $('.gif-cat-bg', el);
-          if (!bg.style.backgroundImage && items[i]) bg.style.backgroundImage = `url('${items[i].preview}')`;
+          const it = items[i % items.length];
+          if (!bg.style.backgroundImage && it) bg.style.backgroundImage = `url('${it.preview}')`;
         });
-      } catch (e) { if (e?.code === 'nokey') fail(e); }
+      } catch {}
     }
     let seq = 0;
     async function results(q, label) {
@@ -430,14 +437,15 @@
       backBtn.classList.remove('hidden');
       body.innerHTML = `<div class="gif-title">${esc(label || `“${q}”`)}</div><div class="gif-grid loading">${'<span class="gif-skel"></span>'.repeat(12)}</div>`;
       try {
-        const { items, provider } = await GIF.search(q);
+        const { items, provider, matched } = await GIF.search(q);
         if (my !== seq) return;
         attr(provider);
-        if (q && items[0]) { const p = catPreviews(); p[q.toLowerCase()] = items[0].preview; LS.set('gifCatPreview', p); }
+        if (q && matched !== false && items[0]) { const p = catPreviews(); p[q.toLowerCase()] = items[0].preview; LS.set('gifCatPreview', p); }
         if (!items.length) return msg('Nenhum GIF encontrado.');
+        if (matched === false) $('.gif-title', body).textContent = `Sem resultados para “${q}”: veja os GIFs em alta`;
         $('.gif-grid', body).classList.remove('loading');
         $('.gif-grid', body).innerHTML = items.map((g) => `<button type="button" class="gif-item" data-gif="${esc(g.use)}" title="${esc(g.title)}"><img src="${esc(g.preview)}" alt="" loading="lazy"></button>`).join('');
-      } catch (e) { if (my === seq) fail(e); }
+      } catch { if (my === seq) fail(); }
     }
 
     ov.addEventListener('mousedown', (e) => { if (e.target === ov) closeGifPicker(); });
@@ -458,7 +466,7 @@
     $('.gif-link', ov).addEventListener('submit', (e) => {
       e.preventDefault();
       const url = gifFromLink($('.gif-link input', ov).value);
-      if (!url) return toast('Cole um link do GIPHY (giphy.com/gifs/…) ou o endereço .gif do KLIPY.', 'err');
+      if (!url) return toast('Cole um link https:// de GIF ou imagem (.gif, .png, .jpg, .webp) ou do GIPHY.', 'err');
       choose(url);
     });
     home();
